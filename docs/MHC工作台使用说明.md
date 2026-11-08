@@ -1,7 +1,8 @@
 # MHC 预测工作台 · 使用说明
 
-> 版本 1.0.0 —— 整合 NetMHCpan 4.2e / NetChop 3.1d / NetMHCstabpan 1.0 的一体化 Web 应用
+> 版本 1.1.0 —— 整合 NetMHCpan 4.2e / NetChop 3.1d / NetMHCstabpan 1.0 的一体化 Web 应用
 > 无需命令行：双击启动，浏览器里点击即用，支持局域网多人访问。
+> 1.1.0 新增：**数据库与工具**模块（GDC 突变检索 / IEDB 云端预测 / 资源清单）。
 
 ---
 
@@ -16,6 +17,7 @@
 | **稳定性预测** | NetMHCstabpan 1.0 | 预测 pMHC 复合物半衰期（含亲和力综合评分） |
 | **流水线** | 三者串联 | 酶切 → 候选肽 → 结合 → 稳定性，一次跑完 |
 | **突变肽筛选** | NetMHCpan + stabpan | 比对野生型/突变型蛋白，只预测覆盖突变位点的肽段（新抗原筛选） |
+| **数据库与工具** | GDC / IEDB 等外部资源 | 直接检索肿瘤突变、调用云端预测、查看可用数据库与在线工具清单 |
 
 ---
 
@@ -45,7 +47,7 @@
 
 ---
 
-## 三、五个模式怎么用
+## 三、六个模式怎么用
 
 ### 通用操作
 
@@ -84,6 +86,87 @@
 **流水线**：切割阈值｜切割模型｜肽长（可多选 8–11）｜只在切割位点取肽（开=模拟真实提呈；关=全滑窗）｜结合筛选阈值｜最小半衰期
 
 **突变肽筛选**：粘贴野生型蛋白序列 + 突变型序列（长度必须一致），自动识别突变位点，只预测覆盖突变的肽段。
+
+---
+
+## 三·五、数据库与工具（1.1.0 新增）
+
+左侧边栏最后一项 **数据库与工具**（图标 ▤）。点进去是独立的两栏界面，不占用预测输入框。内有三个页签。
+
+### 页签 1：GDC 突变检索
+
+从 **GDC（Genomic Data Commons）** 实时拉取 TCGA 各癌种的体细胞突变。这是新抗原筛选的**上游数据源**——先在这里找到真实患者的突变，再去「突变肽筛选」模式设计突变肽。
+
+| 控件 | 说明 |
+|---|---|
+| 队列 | 8 个 TCGA 项目，默认 **TCGA-PAAD（胰腺癌，185 例，24,630 条突变）** |
+| 基因 | 手输基因名（如 `KRAS`）；下方 10 个**胰腺癌驱动基因芯片**可一键填入：KRAS / TP53 / SMAD4 / CDKN2A / ARID1A / KDM6A / MUC16 / TTN / RYR2 / GNAS |
+| 染色体 | 可选，如 `chr12`（按位置检索时用） |
+| 突变类型 | 可选过滤 |
+
+点 **检索** 后表格给出：基因 / 氨基酸改变（如 `KRAS G12D`）/ 后果类型 / DNA 改变 / 染色体 / 起始位置 / 突变亚型 / 转录本 ID。
+
+实测数据量（TCGA-PAAD）：
+
+| 基因 | 突变条数 |
+|---|---|
+| TP53 | 79 |
+| SMAD4 | 34 |
+| CDKN2A | 23 |
+| KRAS | 9 |
+
+> 提示：至少指定「队列 / 基因 / 染色体」之一才能检索，全空会返回中文错误提示。
+
+### 页签 2：IEDB 云端预测
+
+调用 **IEDB（Immune Epitope Database）** 的在线预测服务，作为本地三工具的**交叉验证**手段。同一个肽用本地 NetMHCpan 和 IEDB 的 NetMHCpan 各跑一遍，结果一致才更可信。
+
+- **MHC 类别**：I 类（默认，肽长 9）/ II 类（肽长 15，长度必须 ≥15）
+- **预测方法**：
+  - I 类 12 种：`netmhcpan_el`（默认）/ `netmhcpan_ba` / `netmhcpan` / `netmhcstabpan` / `recommended` / `consensus` / `ann` / `smm` / `smmpmbec` / `comblib_sidney2008` / `pickpocket` / `netmhccons`
+  - II 类 5 种：`recommended` / `netmhciipan` / `consensus` / `comblib` / `nn_align`
+- **等位基因**：手输，**必须带星号**（`HLA-A*02:01`）。应用会自动给本地写法补星号，所以 `HLA-A02:01` 也能用。支持 `HLA-DRB1*01:01` 这类 MHC-II 写法。最多 5 个。
+- 单次最多 500 条肽；云端调用 10–60 秒属正常，按钮会转圈。
+
+返回列随方法不同：`netmhcpan_el` 给 `score`（无 ic50），`netmhcpan_ba` / `netmhcpan` 给 `ic50`，`consensus` 给一大堆 `ann_ic50 / ann_rank / comblib_sidney2008_* / consensus_percentile_rank / smm_ic50 / smm_rank`。表头直接用接口返回的列名。
+
+### 页签 3：资源清单
+
+把设计书里提到的数据库和在线工具做成卡片墙，每张卡带状态徽标，点「打开 ↗」直接跳外链。
+
+**7 个数据库**：GDC-PAAD（内嵌检索）/ GDC 全站 / ICGC / IEDB / IEDB Tools / UniProt / Ensembl
+
+**9 个在线工具**（含实测可达性）：
+
+| 工具 | 状态 | 说明 |
+|---|---|---|
+| NetCTLpan 1.1 | ✅ 在线可用 | 整合蛋白酶体切割 + TAP 转运 + MHC 结合 |
+| IEDB Immunogenicity | ✅ 在线可用 | 免疫原性预测 |
+| JCAT | ✅ 在线可用 | 密码子优化（mRNA 疫苗序列设计） |
+| ORFfinder | ✅ 在线可用 | 开放阅读框查找 |
+| Vaxijen | ⚠ 403 | 需注册登录 |
+| ToxinPred | ⚠ 不可达 | 站点迁移中 |
+| GenScript | ⚠ 不可达 | 需账号 |
+| CIMmSim | ⚠ 路径变更 | 官网结构已调整 |
+| OptiType | 📦 本地命令行 | HLA 分型，需另装 |
+
+> 状态为实测结果，网络环境变化后会变。徽标颜色：绿=可用，蓝=内嵌，黄=受限，灰=离线。
+
+### 与预测模式的联动
+
+资源清单里 **GDC-PAAD** 卡片有「在此检索突变」按钮，**IEDB Tools** 卡片有「在此调用预测」按钮，点一下直接跳到对应页签，不用来回找。
+
+典型工作流：
+
+```
+GDC 检索 KRAS 突变（拿到 G12D）
+   ↓ 复制突变信息
+突变肽筛选模式：粘野生型 KRAS + 突变型 KRAS，选 HLA 等位基因
+   ↓ 拿到候选突变肽
+流水线模式：验证切割 + 结合 + 稳定性
+   ↓ 想交叉验证
+数据库与工具 → IEDB 云端预测，同一条肽再跑一遍
+```
 
 ---
 
@@ -135,6 +218,9 @@
 | 任务一直转圈 | 大蛋白 × 多等位基因较慢；600aa × 4 等位基因约 1 秒，1000aa 以上请耐心；可点「取消」 |
 | 稳定性结果亲和力列为空 | 肽长 <7 或 >20 超出 stabpan 可靠范围（应用已给出黄色警告） |
 | 502 错误的网关 | 后端未启动；双击「启动」即可恢复 |
+| GDC 检索一直显示「查询中…」 | GDC 官方 API 较慢，TP53 这类 79 条突变的查询要 10–30 秒；超过 60 秒再排查网络 |
+| IEDB 预测失败 | 云端服务偶发排队；先确认等位基因带星号（`HLA-A*02:01`），MHC-II 序列长度 ≥15 |
+| GDC 检索报「无法连接远端服务」 | 国内访问 api.gdc.cancer.gov 偶发超时，重试一次；或换用资源清单里的外链直接开网页查 |
 
 ---
 
@@ -153,9 +239,9 @@ WSL Ubuntu-24.04 内 Flask 后端（/opt/bio/app，Python 3.12 + Flask 3.1 + SQL
 /opt/bio/netMHCpan-4.2 · /opt/bio/netchop-3.1 · /opt/bio/netMHCstabpan-1.0
 ```
 
-- 后端源码：`软件\mhc-app\`（改代码后跑 `scripts\120_sync_static.sh` 同步到 WSL 并重启）
+- 后端源码：`整合\mhc-workbench\mhc-app\`（改代码后跑 `scripts\120_sync_static.sh` 同步到 WSL 并重启；资源中心相关改动跑 `scripts\160_deploy_resources.sh`）
 - 数据库：WSL 内 `/opt/bio/app/data/mhc.sqlite3`（任务历史）
-- 测试套件：`mhc-app\host\browser_test.js`（浏览器 42 项）、`scripts\130_real_scenarios.sh`（真实场景 33 项）
+- 测试套件：`mhc-app\host\browser_test.js`（浏览器 42 项）、`mhc-app\host\res_test.js`（资源中心 35 项）、`scripts\130_real_scenarios.sh`（真实场景 33 项）、`scripts\165_full_resources_test.sh`（资源 API 33 项）
 
 ---
 

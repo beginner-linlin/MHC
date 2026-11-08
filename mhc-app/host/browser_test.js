@@ -167,15 +167,34 @@ async function main() {
         const id = lastJobId;
 
         // 2) 用 API 轮询直到终态
+        //    代理层偶发返回 HTML（502 引导页）或连接被重置，此时不能直接 r.json()，
+        //    否则会抛 "Unexpected token '<'"。改为容错重试。
         let status = '';
         let job = null;
+        let lastErr = '';
         while (true) {
-            const r = await page.context().request.get(`${BASE}/api/jobs/${id}`);
-            const d = await r.json();
-            job = d.job;
-            status = job.status;
-            if (['done', 'failed', 'cancelled'].includes(status)) break;
-            if (Date.now() - t0 > timeout) throw new Error(`任务超时 (${id}, ${status})`);
+            try {
+                const r = await page.context().request.get(`${BASE}/api/jobs/${id}`, { timeout: 20000 });
+                const ct = r.headers()['content-type'] || '';
+                if (!ct.includes('application/json')) {
+                    lastErr = `非 JSON 响应 (${r.status()} ${ct})`;
+                } else {
+                    const d = await r.json();
+                    if (d && d.job) {
+                        job = d.job;
+                        status = job.status;
+                        lastErr = '';
+                        if (['done', 'failed', 'cancelled'].includes(status)) break;
+                    } else {
+                        lastErr = '响应缺少 job 字段';
+                    }
+                }
+            } catch (e) {
+                lastErr = e.message.slice(0, 120);
+            }
+            if (Date.now() - t0 > timeout) {
+                throw new Error(`任务超时 (${id}, status=${status || '?'}, 最近错误=${lastErr || '无'})`);
+            }
             await page.waitForTimeout(280);
         }
         await page.waitForTimeout(700);
@@ -203,7 +222,9 @@ async function main() {
 
         await page.waitForSelector('.nav-item', { timeout: 15000 });
         const navCount = await page.locator('.nav-item').count();
-        check('5 个功能模式', navCount === 5, navCount + ' 个');
+        check('6 个功能模式', navCount === 6, navCount + ' 个');
+        check('含「数据库与工具」入口',
+            (await page.locator('.nav-item[data-mode="resources"]').count()) === 1);
 
         await page.waitForFunction(
             () => document.getElementById('healthDot')?.className.includes('ok'),

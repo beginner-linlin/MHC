@@ -66,6 +66,21 @@
           <em>新抗原 · 找出突变产生的新肽</em>
         </span>
       </button>
+      <div class="nav-sep"></div>
+      <button class="nav-item" data-mode="resources">
+        <span class="nav-icon">▤</span>
+        <span class="nav-label">
+          <strong>数据库与工具</strong>
+          <em>GDC 突变检索 · IEDB 云预测 · 外链</em>
+        </span>
+      </button>
+      <button class="nav-item" data-mode="agent">
+        <span class="nav-icon">🧬</span>
+        <span class="nav-label">
+          <strong>智能助手</strong>
+          <em>自然语言 → 查库 → 预测 → 总结</em>
+        </span>
+      </button>
       <div class="sidebar-foot">
         <div class="ver" id="versionInfo">版本加载中…</div>
       </div>
@@ -98,8 +113,39 @@
             <button class="link" id="btnSamplePan">填入示例</button>
             <button class="link" id="btnClearInput">清空</button>
           </div>
-          <input type="file" id="fileInput" accept=".txt,.fa,.fasta,.faa,.csv,.tsv,.xlsx,.xls" hidden>
+          <input type="file" id="fileInput" accept=".txt,.fa,.fasta,.faa,.csv,.tsv,.xlsx,.xls,.vcf,.maf,.gz" hidden>
           <div class="file-hint" id="fileHint" hidden></div>
+        </div>
+
+        <!-- 非标准肽段处理策略：检测到 B/Z/X/O/U 等字符时如何处置（所有模式共用） -->
+        <div class="ns-policy" id="nsPolicy" hidden>
+          <div class="ns-policy-head">
+            <label>非标准肽段处理</label>
+            <span class="hint" id="nsCount"></span>
+          </div>
+          <div class="ns-policy-opts">
+            <label class="ns-opt">
+              <input type="radio" name="nsAction" value="mark" checked>
+              <span class="ns-opt-body">
+                <strong>标记并预测</strong>
+                <em>照常计算，结果行带 ⚠ 标记（字符被当作 X，数值仅供参考）</em>
+              </span>
+            </label>
+            <label class="ns-opt">
+              <input type="radio" name="nsAction" value="skip">
+              <span class="ns-opt-body">
+                <strong>跳过</strong>
+                <em>不参与预测，结果表中以灰色占位行保留显示</em>
+              </span>
+            </label>
+            <label class="ns-opt">
+              <input type="radio" name="nsAction" value="remove">
+              <span class="ns-opt-body">
+                <strong>删除</strong>
+                <em>直接移除，不参与预测、不出现在结果中</em>
+              </span>
+            </label>
+          </div>
         </div>
 
         <!-- 突变模式专用 -->
@@ -197,6 +243,7 @@
           <option value="sb">仅强结合 (SB)</option>
           <option value="wb">强+弱结合 (SB/WB)</option>
           <option value="binder">仅结合肽</option>
+          <option value="std">隐藏非标准肽段</option>
         </select>
         <span class="grow"></span>
         <span class="row-count" id="rowCount"></span>
@@ -213,6 +260,178 @@
           <thead id="resultThead"></thead>
           <tbody id="resultTbody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- 资源中心：数据库 + 在线工具（占满右侧两栏） -->
+    <section class="panel panel-resources" id="resourcesPanel" hidden>
+      <div class="panel-head">
+        <h2>数据库与在线工具</h2>
+        <p>大创项目设计书（基于 AI 的胰腺癌新抗原 mRNA 疫苗设计与评价）所需的数据库与在线工具。
+          标注「内嵌」的可直接在这里检索，其余一键跳转。</p>
+      </div>
+      <div class="panel-body res-body">
+
+        <div class="res-tabs">
+          <button class="chip active" data-rtab="gdc">GDC 突变检索</button>
+          <button class="chip" data-rtab="iedb">IEDB 云端预测</button>
+          <button class="chip" data-rtab="catalog">数据库与工具清单</button>
+        </div>
+
+        <!-- GDC 突变检索 -->
+        <div class="res-pane" id="resPaneGdc">
+          <div class="field-row">
+            <div class="field">
+              <label>项目队列</label>
+              <select id="gdcProject"></select>
+            </div>
+            <div class="field">
+              <label>基因符号</label>
+              <input type="text" id="gdcGene" placeholder="如 KRAS / TP53 / SMAD4（留空查全部）" autocomplete="off">
+            </div>
+          </div>
+          <div class="field">
+            <label>常见驱动基因（点击填入）</label>
+            <div class="gene-chips" id="gdcGeneChips"></div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>染色体（可选）</label>
+              <input type="text" id="gdcChrom" placeholder="如 chr12" autocomplete="off">
+            </div>
+            <div class="field">
+              <label>突变类型（可选）</label>
+              <select id="gdcMutType">
+                <option value="">全部类型</option>
+                <option value="Simple Somatic Mutation">Simple Somatic Mutation</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn btn-primary" id="btnGdcSearch">检索突变</button>
+            </div>
+          </div>
+          <div class="res-meta" id="gdcMeta"></div>
+          <div class="table-scroll res-table-wrap">
+            <table class="result-table" id="gdcTable" hidden>
+              <thead id="gdcThead"></thead>
+              <tbody id="gdcTbody"></tbody>
+            </table>
+          </div>
+          <div class="res-hint">
+            <strong>用法提示：</strong>查到突变后，可把「氨基酸改变」对应的野生型蛋白序列（UniProt）放进
+            「突变肽筛选」模式，即可得到该突变产生的候选新抗原肽。
+          </div>
+        </div>
+
+        <!-- IEDB 云端预测 -->
+        <div class="res-pane" id="resPaneIedb" hidden>
+          <div class="field-row">
+            <div class="field">
+              <label>MHC 类别</label>
+              <select id="iedbClass">
+                <option value="I">MHC-I（CD8 T 细胞）</option>
+                <option value="II">MHC-II（CD4 T 细胞）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>预测方法</label>
+              <select id="iedbMethod"></select>
+            </div>
+            <div class="field">
+              <label>肽长</label>
+              <input type="number" id="iedbLength" value="9" min="8" max="15" style="width:80px">
+            </div>
+          </div>
+          <div class="field">
+            <label>HLA 等位基因（逗号分隔，最多 5 个）</label>
+            <input type="text" id="iedbAlleles" placeholder="HLA-A*02:01, HLA-A*24:02" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>肽段（每行一条）</label>
+            <textarea id="iedbInput" class="seq-area" spellcheck="false"
+              placeholder="SLYNTVATL&#10;GILGFVFTL&#10;MLLSVPLLL"></textarea>
+            <div class="input-meta">
+              <span id="iedbStats">尚未输入</span>
+              <span class="grow"></span>
+              <button class="link" id="btnIedbSample">填入示例</button>
+            </div>
+          </div>
+          <div class="submit-row">
+            <button class="btn btn-primary" id="btnIedbRun">
+              <span class="btn-spinner" id="iedbSpinner" hidden></span>
+              <span id="iedbRunText">调用 IEDB 预测</span>
+            </button>
+          </div>
+          <div class="res-meta" id="iedbMeta"></div>
+          <div class="table-scroll res-table-wrap">
+            <table class="result-table" id="iedbTable" hidden>
+              <thead id="iedbThead"></thead>
+              <tbody id="iedbTbody"></tbody>
+            </table>
+          </div>
+          <div class="res-hint">
+            <strong>说明：</strong>IEDB 云端跑的是 NetMHCpan 4.1 / NetMHCstabpan 在线版，
+            与本地 4.2 版本结果可能有细微差异；本地工具无网络依赖、支持 FASTA 与流水线，日常优先用本地。
+          </div>
+        </div>
+
+        <!-- 数据库与工具清单 -->
+        <div class="res-pane" id="resPaneCatalog" hidden>
+          <h3 class="res-h">数据库</h3>
+          <div class="res-grid" id="resDbGrid"></div>
+          <h3 class="res-h">在线工具</h3>
+          <div class="res-grid" id="resToolGrid"></div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 智能助手：自然语言 → 工具 → 数据库 → 报告（占满右侧两栏） -->
+    <section class="panel panel-agent" id="agentPanel" hidden>
+      <div class="agent-head">
+        <div>
+          <h2>🧬 智能助手</h2>
+          <p>用自然语言描述需求：查数据库（UniProt/ClinVar/PubMed）、批量预测（结合/酶切/稳定性/流水线/突变），自动汇总成报告。</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnAgentConfig">⚙ 设置模型</button>
+      </div>
+
+      <div class="agent-body">
+        <div class="agent-config" id="agentConfigBox" hidden>
+          <div class="field"><label>API Base URL</label>
+            <input type="text" id="agentBaseUrl" placeholder="如 https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4">
+          </div>
+          <div class="field"><label>API Key</label>
+            <input type="password" id="agentApiKey" placeholder="填一次将保存（仅本机）">
+          </div>
+          <div class="field"><label>模型名</label>
+            <input type="text" id="agentModel" placeholder="如 deepseek-chat / glm-4-flash / qwen-plus">
+          </div>
+          <div class="agent-config-actions">
+            <button class="btn btn-primary btn-sm" id="btnAgentSaveCfg">保存</button>
+            <button class="btn btn-ghost btn-sm" id="btnAgentCfgCancel">取消</button>
+            <span class="agent-cfg-status" id="agentCfgStatus"></span>
+          </div>
+        </div>
+
+        <div class="agent-chat" id="agentChat">
+          <div class="agent-welcome" id="agentWelcome">
+            <div class="agent-welcome-icon">🧬</div>
+            <p><b>试试这样问：</b></p>
+            <ul>
+              <li>「查 EGFR 的蛋白序列，用 A*02:01 预测 9mer 结合肽，按亲和力排序」</li>
+              <li>「TP53 有哪些 pathogenic 变异？挑 5 个做突变肽筛选」</li>
+              <li>「对这条蛋白跑完整流水线：&gt;KRAS<br>MTEYKLVVVGAGGVGKSALTIQLIQNHFVDEYDPTIEDSYRKQVVIDGE...」</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="agent-input">
+          <textarea id="agentInput" rows="2" placeholder="输入需求，回车或点发送（Shift+回车换行）"></textarea>
+          <button class="btn btn-primary" id="btnAgentSend" title="发送 (Ctrl+Enter)">发送</button>
+        </div>
+        <div class="agent-status" id="agentStatus"></div>
       </div>
     </section>
   </div>
