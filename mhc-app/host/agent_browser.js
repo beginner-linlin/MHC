@@ -7,7 +7,7 @@ const BASE = 'http://127.0.0.1:8080';
   const browser = await chromium.launch({ executablePath: CHROME, headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const errs = [];
-  page.on('pageerror', e => errs.push(e.message));
+  page.on('pageerror', e => errs.push(e.message + ' || STACK: ' + (e.stack||'').split('\n').slice(0,3).join(' | ')));
   page.on('console', m => { if (m.type()==='error') errs.push(m.text()); });
   await page.goto(BASE + '/', { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForTimeout(1500);

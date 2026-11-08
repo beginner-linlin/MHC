@@ -15,7 +15,8 @@
 
 设计原则：
   - 解析全部在服务端做（csv 模块正确处理引号转义，浏览器端做不到）
-  - 列识别用别名表 + 前 5 行内找表头
+  - 列识别用别名打分表 + 前 15 行内找表头（IEDB epitope_table_export 顶部有多行
+    标签如 EPITOPES / IEDB，真正表头常在第 3 行以后；标签行与说明行自动跳过）
   - 能提取的额外信息（等位基因列、蛋白名列、突变注释）一并返回
 """
 
@@ -23,7 +24,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import time
 from dataclasses import dataclass, field
 
 from .runner import FastaRecord, looks_like_fasta, parse_fasta, parse_peptide_list, resolve_alleles
@@ -32,6 +35,15 @@ MAX_PEPTIDES = 20000
 MAX_ROWS_SCAN = 20000
 PEP_RE = re.compile(r"^[ACDEFGHIKLMNPQRSTVWYBXZUJO*-]+$")
 
+# IEDB 导出（epitope_table_export 等）顶部及分节处的固定标签词。
+# 这些词全部由标准氨基酸字母组成（如 EPITOPES、REFERENCE），不挡掉就会被
+# 当成肽段——「识别为多肽列表，2 条肽 EPITOPES/IEDB」误报的直接原因之一。
+LABEL_WORDS = {
+    "EPITOPES", "EPITOPE", "IEDB", "REFERENCE", "REFERENCES",
+    "ASSAY", "ASSAYS", "MHC", "HOST", "ELISPOT", "POSITIVE", "NEGATIVE",
+    "TCELL", "BCELL",
+}
+
 AA3 = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
     "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
@@ -39,22 +51,42 @@ AA3 = {
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
 
-# 列别名（全部小写、去空格后匹配；前缀匹配用 startswith）
-PEP_COLS = [
-    "peptide", "peptides", "peptide_seq", "peptide sequence", "peptide seq",
-    "mt peptide", "mt_peptide", "mut peptide", "mut_peptide", "mutant peptide",
-    "mutated peptide", "mutated_peptide", "alt peptide", "tumor peptide",
-    "neoantigen", "epitope", "epitope seq", "sequence", "seq", "short sequence",
-    "肽", "肽段", "序列", "突变肽", "抗原肽", "表位",
+# 列别名（全部小写、去空格后匹配）。
+# 打分制：3 = 明确的肽/序列语义；2 = 表位/结构/描述类（IEDB epitope_table_export
+# 常把序列放在 Epitope Structure / Description 这类列里）；1 = 泛指列名（慎用，
+# 仅在没有更强候选时兜底）。
+PEP_COL_SCORED: list[tuple[str, int]] = [
+    # —— 3 分：肽 / 序列语义 ——
+    ("peptide", 3), ("peptides", 3), ("peptide seq", 3), ("peptide sequence", 3),
+    ("mt peptide", 3), ("mut peptide", 3), ("mutant peptide", 3), ("mutated peptide", 3),
+    ("alt peptide", 3), ("tumor peptide", 3), ("neoantigen", 3),
+    ("linear sequence", 3), ("epitope sequence", 3), ("epitope seq", 3),
+    ("sequence", 3), ("seq", 3), ("short sequence", 3),
+    ("肽", 3), ("肽段", 3), ("序列", 3), ("突变肽", 3), ("抗原肽", 3),
+    # —— 2 分：表位 / 结构 / 描述类 ——
+    ("epitope", 2), ("epitope structure", 2), ("structure", 2),
+    ("structure description", 2), ("description", 2), ("表位", 2),
+    # —— 1 分：泛指列名 ——
+    ("name", 1), ("名称", 1),
 ]
+# 兼容旧引用：纯别名列表（不含打分信息）
+PEP_COLS = [a for a, _ in PEP_COL_SCORED]
 WT_PEP_COLS = ["wt peptide", "wt_peptide", "wildtype peptide", "wild type peptide",
                "ref peptide", "normal peptide", "野生型肽"]
+# IEDB 导出的等位基因列常见写法：Allele / MHC Allele / HLA Allele /
+# MHC - Allele Name / Restriction (Element) 等
 ALLELE_COLS = ["allele", "alleles", "mhc", "hla", "mhc allele", "hla allele",
                "mhc_allele", "hla_allele", "allele name", "allele_name", "hla type",
+               "mhc allele name", "hla allele name", "mhc restriction",
+               "restriction", "restriction element",
                "hla_allele_1", "等位基因", "hla 分型"]
 GENE_COLS = ["gene", "gene name", "gene_name", "hugo_symbol", "hugo symbol", "symbol",
              "protein", "protein name", "protein_name", "uniprot", "protein_id",
              "gene symbol", "基因", "蛋白", "蛋白名"]
+
+# 这些列名开头的列绝不是肽列（IEDB 的 Epitope IRI / Object ID / Accession 等）
+_PEP_COL_EXCLUDE = ("epitope iri", "epitope id", "object id", "iri", "url",
+                    "accession", "sequence id", "seq id", "id")
 
 
 @dataclass
@@ -121,6 +153,38 @@ def _match_col(header: str, aliases: list[str]) -> bool:
         if k == an or k.startswith(an) or an.startswith(k):
             return True
     return False
+
+
+def _pep_col_score(header: str) -> int:
+    """表头列的「肽语义」打分：0 = 不是肽列。
+
+    IRI / ID / URL / Accession 开头的列（IEDB 的 Epitope IRI、Object ID 等）
+    一律 0 分，避免前缀匹配把标识列误当肽列。
+    """
+    k = _norm_key(header)
+    if not k:
+        return 0
+    for ex in _PEP_COL_EXCLUDE:
+        e = _norm_key(ex)
+        if k == e or k.startswith(e):
+            return 0
+    best = 0
+    for a, s in PEP_COL_SCORED:
+        an = _norm_key(a)
+        if k == an or k.startswith(an) or an.startswith(k):
+            best = max(best, s)
+    return best
+
+
+def _is_label_word(s: str) -> bool:
+    """IEDB 导出顶部的固定标签词（EPITOPES / IEDB / REFERENCE …）。"""
+    return _clean_cell(s).upper() in LABEL_WORDS
+
+
+def _drop_label_tokens(peps: list[str]) -> tuple[list[str], int]:
+    """从肽列表里剔除标签词条目，返回 (保留列表, 剔除数)。"""
+    kept = [p for p in peps if p not in LABEL_WORDS]
+    return kept, len(peps) - len(kept)
 
 
 def parse_hgvs_p(txt: str) -> tuple[int, str, str] | None:
@@ -196,9 +260,27 @@ def _parse_fasta_or_peptides(text: str) -> ParseResult:
             res.notes.append(f"共 {len(recs)} 条序列，数量较大。")
         return res
     peps = parse_peptide_list(text)
+    peps, n_label = _drop_label_tokens(peps)
     if peps:
+        # 收紧无表头兜底：中位长度必须在 8–15aa，否则更像说明文字而不是肽列表
+        med = sorted(len(p) for p in peps)[len(peps) // 2]
+        if not (8 <= med <= 15):
+            return ParseResult(
+                kind="empty",
+                notes=[
+                    f"未识别出表头，且内容不像肽段列表（中位长度 {med}aa，肽段应约为 8–15aa），"
+                    "已放弃按肽列表解析。"
+                ],
+            )
         res = ParseResult(format="多肽列表", kind="peptides", peptides=peps)
+        if n_label:
+            res.notes.append(f"已跳过 {n_label} 行非肽内容（如标题/说明行）。")
         return res
+    if n_label:
+        return ParseResult(
+            kind="empty",
+            notes=["内容只包含标题/标签行（如 EPITOPES、IEDB），没有识别到任何肽段。"],
+        )
     return ParseResult(kind="empty", notes=["没有识别到任何序列。"])
 
 
@@ -209,54 +291,88 @@ def _parse_table(rows: list[list[str]], source_format: str) -> ParseResult:
         res.notes = ["表格为空。"]
         return res
 
-    # 1. 在前 5 行里找表头
+    # 1. 在前 15 行里找表头（打分制）。
+    #    IEDB epitope_table_export 顶部有多行标签（EPITOPES / IEDB / 说明行），
+    #    真正的表头常在第 3 行以后。逐行统计命中的肽列/等位基因列/基因列别名，
+    #    取总分最高的行；得分相同时先看肽列得分，再看行序。
     header_idx = -1
     pep_col = allele_col = gene_col = -1
-    for i, row in enumerate(rows[:5]):
+    best_key = (0, 0)  # (总分, 肽列得分)
+    for i, row in enumerate(rows[:15]):
         cells = [_clean_cell(c) for c in row]
-        pc = next((j for j, c in enumerate(cells) if _match_col(c, PEP_COLS)), -1)
+        # 全部由标签词（或空单元格）组成的行不是表头：EPITOPES / IEDB / REFERENCE …
+        if cells and all(c == "" or _is_label_word(c) for c in cells):
+            continue
+        pc, pc_score = -1, 0
+        for j, c in enumerate(cells):
+            s = _pep_col_score(c)
+            if s > pc_score:
+                pc, pc_score = j, s
         ac = next((j for j, c in enumerate(cells) if _match_col(c, ALLELE_COLS)), -1)
         gc = next((j for j, c in enumerate(cells) if _match_col(c, GENE_COLS)), -1)
-        if pc >= 0:
-            header_idx, pep_col, allele_col, gene_col = i, pc, ac, gc
-            break
+        if pc < 0 and ac < 0:
+            continue
+        key = (pc_score + (1 if ac >= 0 else 0) + (1 if gc >= 0 else 0), pc_score)
+        if key > best_key:
+            header_idx, pep_col, allele_col, gene_col, best_key = i, pc, ac, gc, key
 
     if header_idx < 0:
-        # 无表头：整表扫肽
+        # 无表头：逐行取第一个像肽段的单元格
         peps: list[str] = []
+        skipped = 0
         for row in rows[:MAX_ROWS_SCAN]:
+            picked = None
             for c in row:
                 s = _clean_cell(c).upper()
-                if _is_peptide(s) and len(s) >= 6:
-                    peps.append(s)
+                if _is_peptide(s) and len(s) >= 6 and s not in LABEL_WORDS:
+                    picked = s
                     break
+            if picked:
+                peps.append(picked)
+            elif any(_clean_cell(c) for c in row):
+                skipped += 1
         if peps:
-            res.kind = "peptides"
-            res.peptides = peps
-            res.notes.append("未找到表头，已按「每行第一个像肽段的单元格」提取。")
+            # 收紧兜底：中位长度必须在 8–15aa，否则更像说明文字而不是肽列表
+            med = sorted(len(p) for p in peps)[len(peps) // 2]
+            if 8 <= med <= 15:
+                res.kind = "peptides"
+                res.peptides = peps
+                res.notes.append("未找到表头，已按「每行第一个像肽段的单元格」提取。")
+                if skipped:
+                    res.notes.append(f"已跳过 {skipped} 行非肽内容（如标题/说明行）。")
+            else:
+                res.notes.append(
+                    f"未找到表头，且内容不像肽段列表（中位长度 {med}aa，肽段应约为 8–15aa），"
+                    "已放弃按肽列表解析。"
+                )
         else:
             res.notes.append("表格里没有找到肽段样式的列。")
         return res
 
     data = rows[header_idx + 1: header_idx + 1 + MAX_ROWS_SCAN]
     peps, alleles_raw, names = [], [], []
+    skipped = 0
     for row in data:
         if not any(_clean_cell(c) for c in row):
             continue
         get = lambda j: _clean_cell(row[j]) if 0 <= j < len(row) else ""   # noqa: E731
-        pep = get(pep_col).upper()
-        if pep and PEP_RE.match(pep):
+        pep = get(pep_col).upper() if pep_col >= 0 else ""
+        if pep and PEP_RE.match(pep) and len(pep) >= 8 and pep not in LABEL_WORDS:
             peps.append(pep)
             if allele_col >= 0:
                 alleles_raw.append(get(allele_col))
             if gene_col >= 0:
                 names.append(get(gene_col))
-        elif pep:
-            # 长序列列——可能是蛋白而不是肽
-            if len(pep) <= 40000 and set(pep) <= set("ACDEFGHIKLMNPQRSTVWYBXZUJO*-"):
-                names.append("")  # 占位，后面统一处理
+        else:
+            # 标题/说明行、IRI/ID 列、过短碎片等一律视为非肽内容
+            skipped += 1
+    if skipped:
+        res.notes.append(f"已跳过 {skipped} 行非肽内容（如标题/说明行）。")
     if not peps:
-        res.notes.append(f"表头已识别（肽列 = 第 {pep_col + 1} 列），但数据行里没有合法肽段。")
+        if pep_col >= 0:
+            res.notes.append(f"表头已识别（肽列 = 第 {pep_col + 1} 列），但数据行里没有合法肽段。")
+        else:
+            res.notes.append("表头已识别，但没有找到肽段列（列名不在已知别名表内）。")
         return res
 
     # 2. 长度分布判断：肽 还是 蛋白
@@ -508,11 +624,56 @@ def _parse_xlsx(raw: bytes) -> tuple[list[list[str]], str] | None:
     return rows, f"Excel（{ws.title}）"
 
 
+# ---------------------------------------------------------------- 诊断
+
+
+#: 识别可疑时的原文落盘目录；可用环境变量 MHC_UPLOAD_DEBUG_DIR 覆盖（测试用）
+DEBUG_UPLOAD_DIR = os.environ.get("MHC_UPLOAD_DEBUG_DIR") or "/opt/bio/app/data/uploads"
+
+
+def save_upload_for_debug(text: str, filename: str) -> str:
+    """把疑似识别失败的原文写到磁盘，供人工核对真实文件结构。
+
+    纯函数实现（不依赖 Flask）；目录不存在时自动创建；同秒重名自动加序号。
+    返回保存路径。
+    """
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    base = re.sub(r"[^A-Za-z0-9._\-]+", "_", os.path.basename(filename or "")).strip("_")
+    base = base or "upload.txt"
+    os.makedirs(DEBUG_UPLOAD_DIR, exist_ok=True)
+    path = os.path.join(DEBUG_UPLOAD_DIR, f"{ts}_{base}")
+    n = 1
+    while os.path.exists(path):
+        path = os.path.join(DEBUG_UPLOAD_DIR, f"{ts}_{n}_{base}")
+        n += 1
+    with open(path, "w", encoding="utf-8", errors="replace") as f:
+        f.write(text or "")
+    return path
+
+
 # ---------------------------------------------------------------- 总入口
 
 
 def parse_any(text: str = "", *, filename: str = "", raw: bytes | None = None) -> dict:
-    """识别并解析输入文件。text 为文本内容；raw 为原始字节（xlsx 二进制）。"""
+    """识别并解析输入文件。text 为文本内容；raw 为原始字节（xlsx 二进制）。
+
+    识别结果可疑（kind=empty，或 kind=peptides 且肽数 ≤3）时，顺带把原文
+    落盘（save_upload_for_debug），并在返回 dict 附加 debug_saved=<路径>；
+    落盘失败不影响解析本身。
+    """
+    result = _parse_any_impl(text, filename=filename, raw=raw)
+    try:
+        kind = result.get("kind")
+        if kind == "empty" or (kind == "peptides" and result.get("peptide_count", 0) <= 3):
+            dump = text or (raw.decode("utf-8", "replace") if raw else "")
+            result["debug_saved"] = save_upload_for_debug(dump, filename)
+    except Exception:  # noqa: BLE001 诊断落盘失败不影响主解析
+        pass
+    return result
+
+
+def _parse_any_impl(text: str = "", *, filename: str = "", raw: bytes | None = None) -> dict:
+    """parse_any 的实际解析逻辑（见 parse_any 文档字符串）。"""
     fname = (filename or "").lower()
 
     if raw is not None:

@@ -215,7 +215,7 @@ async function main() {
 
         await page.waitForSelector('.nav-item', { timeout: 15000 });
         const navCount = await page.locator('.nav-item').count();
-        check('7 个功能模式', navCount === 7, navCount + ' 个');
+        check('至少 7 个功能模式', navCount >= 7, navCount + ' 个');
 
         await page.waitForFunction(
             () => document.getElementById('healthDot')?.className.includes('ok'),

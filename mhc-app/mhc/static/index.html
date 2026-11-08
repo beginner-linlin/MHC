@@ -66,6 +66,13 @@
           <em>新抗原 · 找出突变产生的新肽</em>
         </span>
       </button>
+      <button class="nav-item" data-mode="neoantigen">
+        <span class="nav-icon">◉</span>
+        <span class="nav-label">
+          <strong>新抗原一键筛选</strong>
+          <em>突变 → UniProt → 三步串联</em>
+        </span>
+      </button>
       <div class="nav-sep"></div>
       <button class="nav-item" data-mode="resources">
         <span class="nav-icon">▤</span>
@@ -175,6 +182,27 @@
               <button class="btn btn-ghost" id="btnLoadMutantSample">填入示例突变</button>
             </div>
           </div>
+        </div>
+
+        <!-- 新抗原一键筛选：突变列表 + UniProt 预览 -->
+        <div class="neo-block" id="neoBlock" hidden>
+          <div class="field">
+            <div class="field-head">
+              <label>突变列表（每行一个）</label>
+              <div class="field-actions">
+                <button class="chip" id="btnNeoFromGdc">从 GDC 导入</button>
+                <button class="chip" id="btnNeoSample">填入示例</button>
+              </div>
+            </div>
+            <textarea id="neoMutations" class="seq-area" spellcheck="false"
+              placeholder="KRAS G12D&#10;TP53 R175H&#10;SMAD4 R361C"></textarea>
+            <div class="input-meta">
+              <span id="neoStats">尚未输入突变</span>
+              <span class="grow"></span>
+              <button class="link" id="btnNeoPreview">预览蛋白与候选肽</button>
+            </div>
+          </div>
+          <div class="neo-preview" id="neoPreview" hidden></div>
         </div>
 
         <!-- HLA 选择 -->

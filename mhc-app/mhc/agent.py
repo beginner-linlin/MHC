@@ -50,29 +50,136 @@ class LLMConfig:
         return bool(self.base_url and self.api_key and self.model)
 
 
+_LLM_RETRYABLE_CODES = {429, 500, 502, 503, 504}
+_LLM_RETRY_DELAYS = (1.0, 3.0)   # 指数退避：第 1 次重试前 1s，第 2 次前 3s
+
+# 平台控制台域名 → 正确的 OpenAI 兼容 API 端点示例（用户最常填错的地址）
+_CONSOLE_HOST_HINTS = {
+    "platform.deepseek.com": "https://api.deepseek.com",
+    "platform.openai.com": "https://api.openai.com/v1",
+    "console.moonshot.cn": "https://api.moonshot.cn/v1",
+    "bigmodel.cn": "https://open.bigmodel.cn/api/paas/v4",
+    "bailian.console.aliyun.com": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+}
+
+
+def _extract_title(html: str) -> str:
+    """从上游 HTML 封锁页里提取 <title>（如 Error - Request Blocked）。"""
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", m.group(1)).strip()[:60]
+
+
+def _endpoint_hint(base_url: str) -> str:
+    """base_url 疑似填成平台网页地址时给出正确端点示例。"""
+    try:
+        host = urllib.parse.urlparse(base_url).netloc.lower()
+    except Exception:
+        return ""
+    for dom, example in _CONSOLE_HOST_HINTS.items():
+        if dom in host:
+            return f"当前 API 地址疑似填成了平台网页地址（{host}），正确端点示例：{example}。"
+    return ""
+
+
+def _cap(msg: str, limit: int = 200) -> str:
+    return msg if len(msg) <= limit else msg[: limit - 1] + "…"
+
+
+def _humanize_llm_error(code: int, body: str, base_url: str = "") -> str:
+    """把 LLM 上游错误响应转成一句人话；绝不透传整页 HTML / 长 CSS。"""
+    body = (body or "").strip()
+    title = _extract_title(body) if ("<" in body[:400]) else ""
+    hint = _endpoint_hint(base_url)
+    tail = "请到「智能助手 → 配置」更换 API 地址或模型；若已确认地址正确请稍后重试。"
+    if body.startswith("<") or "<html" in body[:200].lower():
+        title_part = f"，{title}" if title else ""
+        if code == 429:
+            lead = f"模型服务限流（HTTP 429{title_part}）：{hint}"
+        else:
+            lead = f"模型服务异常（HTTP {code}{title_part}）：{hint}"
+        return _cap(lead + tail)
+    # JSON 错误响应：透传其 message 字段
+    try:
+        data = json.loads(body)
+        msg = ""
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = str(err.get("message") or json.dumps(err, ensure_ascii=False)[:120])
+            elif isinstance(err, str):
+                msg = err
+            msg = msg or str(data.get("message") or "")
+        if msg:
+            return _cap(f"模型服务返回错误（HTTP {code}）：{msg}")
+    except Exception:
+        pass
+    plain = re.sub(r"\s+", " ", body)[:120] if body else "(空响应)"
+    return _cap(f"模型服务返回错误（HTTP {code}）：{plain}")
+
+
+def _parse_retry_after(val: str | None, fallback: float) -> float:
+    try:
+        return min(max(float(val), 0.2), 10.0)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def chat_completion(cfg: LLMConfig, messages: list[dict], tools: list[dict]) -> dict:
-    """OpenAI 兼容 /chat/completions。返回解析后的 JSON。"""
+    """OpenAI 兼容 /chat/completions。返回解析后的 JSON。
+
+    对 429 / 5xx / 网络错误做指数退避重试（最多 2 次重试，Retry-After 头优先，
+    间隔约 1s / 3s）；错误信息统一美化成中文人话，绝不把上游 HTML 封锁页透传给用户。
+    """
     url = f"{cfg.base_url}/chat/completions"
     payload: dict[str, Any] = {"model": cfg.model, "messages": messages, "temperature": 0.2}
     if tools:
         payload["tools"] = tools
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg.api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT + 55) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:400]
-        raise RuntimeError(f"LLM HTTP {e.code}: {body}") from e
-    except Exception as e:  # 网络等
-        raise RuntimeError(f"LLM 请求失败: {e}") from e
+    body = json.dumps(payload).encode("utf-8")
+    max_attempts = 3  # 1 次原始请求 + 2 次重试
+    last_err = ""
+    for attempt in range(max_attempts):
+        if attempt:
+            time.sleep(_LLM_RETRY_DELAYS[attempt - 1] if attempt - 1 < len(_LLM_RETRY_DELAYS) else 3.0)
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {cfg.api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT + 55) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            resp_body = e.read().decode("utf-8", "replace")
+            last_err = _humanize_llm_error(e.code, resp_body, cfg.base_url)
+            if e.code in _LLM_RETRYABLE_CODES and attempt < max_attempts - 1:
+                time.sleep(_parse_retry_after(e.headers.get("Retry-After"), _LLM_RETRY_DELAYS[attempt]))
+                continue
+            raise RuntimeError(last_err) from e
+        except Exception as e:  # 网络 / 连接失败等
+            if attempt < max_attempts - 1:
+                time.sleep(_LLM_RETRY_DELAYS[attempt])
+                continue
+            raise RuntimeError(_cap(f"LLM 服务连接失败：{e}；请检查网络与「智能助手 → 配置」里的 API 地址")) from e
+        else:
+            try:
+                return json.loads(raw)
+            except Exception:
+                # HTTP 200 但不是 JSON：多半是地址配错（打到网页/网关），重试无意义
+                title = _extract_title(raw)
+                title_part = f"，{title}" if title else ""
+                snippet = "" if title else re.sub(r"\s+", " ", raw.strip())[:100]
+                snippet_part = f"：{snippet}" if snippet else ""
+                raise RuntimeError(_cap(
+                    f"模型服务返回了非 JSON 内容（HTTP 200{title_part}{snippet_part}）；"
+                    "请检查「智能助手 → 配置」里的 API 地址是否为 OpenAI 兼容端点"
+                ))
+    raise RuntimeError(last_err or "LLM 请求失败")
 
 # ---------------------------------------------------------------- 工具注册表
 

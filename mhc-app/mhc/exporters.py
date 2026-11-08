@@ -85,6 +85,28 @@ MUT_COLUMNS = [
     ("combined_rank", "综合排名%", 13),
 ]
 
+NEO_COLUMNS = [
+    ("gene", "基因", 10),
+    ("mutation", "突变", 11),
+    ("accession", "UniProt", 12),
+    ("pos", "肽起点", 9),
+    ("peptide", "突变肽", 17),
+    ("ref_peptide", "野生型肽", 17),
+    ("mhc", "HLA", 15),
+    ("rank_el", "EL 排名%", 10),
+    ("score_el", "EL 得分", 10),
+    ("aff_nm", "亲和力 nM", 12),
+    ("bind_pan", "结合等级", 10),
+    ("wt_rank_el", "野生型排名%", 12),
+    ("wt_aff_nm", "野生型亲和力", 13),
+    ("delta_rank", "Δ排名", 10),
+    ("cut_pos", "切割位点", 10),
+    ("cut_score", "切割概率", 10),
+    ("thalf", "半衰期(h)", 11),
+    ("rank_stab", "稳定性排名%", 12),
+    ("combined_rank", "综合排名%", 12),
+]
+
 HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
 BORDER = Border(*[Side(style="thin", color="D0D7DE")] * 4)
@@ -195,6 +217,7 @@ def export_rows(
         "stab": ("NetMHCstabpan结果", STAB_COLUMNS),
         "pipeline": ("串联流水线结果", PIPE_COLUMNS),
         "mutant": ("突变肽筛选结果", MUT_COLUMNS),
+        "neoantigen": ("新抗原候选肽", NEO_COLUMNS),
     }
     label, columns = table.get(kind, ("结果", PAN_COLUMNS))
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
