@@ -1,6 +1,20 @@
 @echo off
-title MHC 预测工作台 - 日志与状态
+title MHC Workbench - 日志与状态
 cd /d "%~dp0"
+
+rem ==== 自动定位 mhc-app 目录（兼容不同摆放位置）====
+set "APPDIR="
+if exist "%~dp0mhc-app\host\server.js" set "APPDIR=%~dp0mhc-app"
+if not defined APPDIR if exist "%~dp0mhc-workbench\mhc-app\host\server.js" set "APPDIR=%~dp0mhc-workbench\mhc-app"
+if not defined APPDIR if exist "%~dp0..\mhc-app\host\server.js" set "APPDIR=%~dp0..\mhc-app"
+if not defined APPDIR if exist "C:\Users\86156\Desktop\大创\软件\mhc-app\host\server.js" set "APPDIR=C:\Users\86156\Desktop\大创\软件\mhc-app"
+if not defined APPDIR (
+    echo.
+    echo   [错误] 未找到 mhc-app 应用目录。
+    echo.
+    pause
+    exit /b 1
+)
 
 :menu
 echo.
@@ -46,10 +60,10 @@ goto menu
 
 :proxylog
 echo.
-if exist "mhc-app\host\logs\proxy.log" (
-    powershell -NoProfile -Command "Get-Content 'mhc-app\host\logs\proxy.log' -Tail 40"
+if exist "%APPDIR%\host\logs\proxy.log" (
+    powershell -NoProfile -Command "Get-Content '%APPDIR%\host\logs\proxy.log' -Tail 40"
 ) else (
-    echo     暂无日志文件
+    echo     暂无日志文件（代理尚未从本目录启动过）
 )
 echo.
 pause
