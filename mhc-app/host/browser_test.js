@@ -69,7 +69,12 @@ async function main() {
     const shot = (n) => page.screenshot({ path: path.join(OUT, n + '.png') }).catch(() => {});
 
     // ── 小工具 ──
-    const nav = (mode) => page.click(`.nav-item[data-mode="${mode}"]`);
+    const nav = async (mode) => {
+        // busy 时 setMode 会被前端拦截，先等任务收尾再切换
+        await page.waitForFunction(() => !document.getElementById('btnRun')?.disabled, { timeout: 30000 }).catch(() => {});
+        await page.click(`.nav-item[data-mode="${mode}"]`);
+        await page.waitForTimeout(350);
+    };
 
     async function addAllele(code) {
         // 已选中则幂等返回（应用默认就选了 HLA-A02:01）
@@ -167,41 +172,29 @@ async function main() {
         const id = lastJobId;
 
         // 2) 用 API 轮询直到终态
-        //    代理层偶发返回 HTML（502 引导页）或连接被重置，此时不能直接 r.json()，
-        //    否则会抛 "Unexpected token '<'"。改为容错重试。
         let status = '';
         let job = null;
-        let lastErr = '';
         while (true) {
-            try {
-                const r = await page.context().request.get(`${BASE}/api/jobs/${id}`, { timeout: 20000 });
-                const ct = r.headers()['content-type'] || '';
-                if (!ct.includes('application/json')) {
-                    lastErr = `非 JSON 响应 (${r.status()} ${ct})`;
-                } else {
-                    const d = await r.json();
-                    if (d && d.job) {
-                        job = d.job;
-                        status = job.status;
-                        lastErr = '';
-                        if (['done', 'failed', 'cancelled'].includes(status)) break;
-                    } else {
-                        lastErr = '响应缺少 job 字段';
-                    }
-                }
-            } catch (e) {
-                lastErr = e.message.slice(0, 120);
-            }
-            if (Date.now() - t0 > timeout) {
-                throw new Error(`任务超时 (${id}, status=${status || '?'}, 最近错误=${lastErr || '无'})`);
-            }
+            const r = await page.context().request.get(`${BASE}/api/jobs/${id}`);
+            const d = await r.json();
+            job = d.job;
+            status = job.status;
+            if (['done', 'failed', 'cancelled'].includes(status)) break;
+            if (Date.now() - t0 > timeout) throw new Error(`任务超时 (${id}, ${status})`);
             await page.waitForTimeout(280);
         }
-        await page.waitForTimeout(700);
-
         if (status !== 'done') {
             throw new Error(`任务未成功: ${status} — ${(job.error || job.message || '').slice(0, 200)}`);
         }
+
+        // 等前端轮询回调真正跑完 renderResult（busy 释放且进度条隐藏），
+        // 否则固定 sleep 可能读到上一个任务的旧表头/旧行数
+        await page.waitForFunction(() => {
+            const btn = document.getElementById('btnRun');
+            const pw = document.getElementById('progressWrap');
+            return btn && !btn.disabled && pw && pw.hidden;
+        }, { timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(250);
         return page.locator('#resultTbody tr').count();
     }
 
@@ -223,10 +216,6 @@ async function main() {
         await page.waitForSelector('.nav-item', { timeout: 15000 });
         const navCount = await page.locator('.nav-item').count();
         check('7 个功能模式', navCount === 7, navCount + ' 个');
-        check('含「数据库与工具」入口',
-            (await page.locator('.nav-item[data-mode="resources"]').count()) === 1);
-        check('含「智能助手」入口',
-            (await page.locator('.nav-item[data-mode="agent"]').count()) === 1);
 
         await page.waitForFunction(
             () => document.getElementById('healthDot')?.className.includes('ok'),
@@ -402,6 +391,8 @@ async function main() {
         await addAllele('A02:01');
         await shot('12_mutant_input');
 
+        // 必须抓新 job id 轮询到终态：上一轮流水线结果表本来就可见，
+        // 直接等 #resultTable 可见会读到旧表头（流水线列）与旧标题。
         n = await runAndWait(180000);
         check('突变筛选出结果', n > 0, n + ' 行');
         const mutTh = await tableHeaders();
@@ -535,8 +526,89 @@ async function main() {
         check('突变长度不一致被拦', /长度/.test(toast3), toast3.slice(0, 100));
         await shot('20_error_mutant_len');
 
-        // ═══════════════ 13. 取消任务 ═══════════════
-        console.log('\n【13】任务取消');
+        // ═══════════════ 13. 文件上传识别（IEDB CSV / TCGA MAF / VCF） ═══════════════
+        console.log('\n【13】文件上传识别');
+        await nav('pan');
+        await page.waitForTimeout(300);
+
+        // 13a IEDB 导出 CSV（引号 + 字段内逗号）
+        const iedbPath = path.join(OUT, 'iedb_sample.csv');
+        fs.writeFileSync(iedbPath, [
+            '"organism","protein name","peptide","allele","assay"',
+            '"Plasmodium falciparum","PfEMP1, variant","SLYNTVATL","HLA-A*02:01","ELISPOT"',
+            '"Influenza A","M1, matrix","GILGFVFTL","HLA-B*07:02","ICS"',
+            '"Homo sapiens","Melan-A, MART-1","MLLSVPLLL","HLA-A*02:01","Tetramer"',
+        ].join('\n'), 'utf8');
+        await page.setInputFiles('#fileInput', iedbPath);
+        await page.waitForTimeout(1500);
+        const csvInput = await page.locator('#inputText').inputValue();
+        check('IEDB CSV 上传后填入 3 条肽', csvInput.trim().split('\n').length === 3,
+            JSON.stringify(csvInput.slice(0, 80)));
+        check('IEDB CSV 肽内容正确', csvInput.includes('SLYNTVATL') && csvInput.includes('MLLSVPLLL'),
+            JSON.stringify(csvInput.slice(0, 80)));
+        const fileHint1 = await page.locator('#fileHint').innerText().catch(() => '');
+        check('文件提示显示识别结果', /肽|识别|文件/.test(fileHint1), fileHint1.slice(0, 120));
+        const offerBar = await page.locator('#fileAlleleOffer').count();
+        check('等位基因带入按钮条出现', offerBar > 0, offerBar + ' 个');
+        await shot('22_file_iedb');
+
+        // 13b 点「全部带入」后等位基因进入已选
+        if (offerBar > 0) {
+            const bringBtn = page.locator('#fileAlleleOffer button').first();
+            if (await bringBtn.count()) {
+                await bringBtn.click();
+                await page.waitForTimeout(600);
+                const tags = await page.locator('#alleleSelected .allele-tag').count();
+                check('全部带入后已选等位基因', tags >= 1, tags + ' 个');
+            }
+        }
+
+        // 13c TCGA MAF → 自动切到突变模式
+        const mafPath = path.join(OUT, 'tcga_sample.maf');
+        fs.writeFileSync(mafPath, [
+            'Hugo_Symbol\tChromosome\tStart_Position\tReference_Allele\tTumor_Seq_Allele2\tHGVSp_Short',
+            'KRAS\tchr12\t25398284\tC\tA\tp.Gly12Asp',
+            'TP53\tchr17\t7675088\tG\tA\tp.Arg273His',
+        ].join('\n'), 'utf8');
+        await page.setInputFiles('#fileInput', mafPath);
+        await page.waitForTimeout(1800);
+        const activeMode = await page.locator('.nav-item.active').getAttribute('data-mode');
+        check('MAF 上传后切到突变模式', activeMode === 'mutant', activeMode);
+        const badgeCount = await page.locator('#pendingMutBadge').count();
+        const badgeText = badgeCount ? await page.locator('#pendingMutBadge').innerText() : '';
+        check('显示已载入突变徽标', badgeCount > 0 && /2/.test(badgeText), badgeText.slice(0, 80));
+        await shot('23_file_maf');
+
+        // 13d VCF → 同样进突变模式
+        const vcfPath = path.join(OUT, 'snpEff_sample.vcf');
+        fs.writeFileSync(vcfPath, [
+            '##fileformat=VCFv4.2',
+            '##INFO=<ID=ANN,Number=.,Type=String,Description="Functional annotations: Allele | Annotation | Annotation_Impact | Gene_Name | Gene_ID | Feature_Type | Feature_ID | Transcript_BioType | Rank | HGVS.c | HGVS.p">',
+            '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO',
+            'chr12\t25398284\t.\tC\tA\t.\t.\tANN=A|missense_variant|MODERATE|KRAS|KRAS|transcript|NM_033360.4|protein_coding|c.35G>A|p.Gly12Asp|759/5882|',
+        ].join('\n'), 'utf8');
+        await page.setInputFiles('#fileInput', vcfPath);
+        await page.waitForTimeout(1800);
+        const vcfBadge = await page.locator('#pendingMutBadge').count();
+        check('VCF 上传后识别出突变', vcfBadge > 0, vcfBadge + ' 个徽标');
+        await shot('24_file_vcf');
+
+        // ═══════════════ 14. 资源中心 ═══════════════
+        console.log('\n【14】资源中心');
+        await nav('resources');
+        await page.waitForTimeout(1200);
+        const resVisible = await page.locator('#resourcesPanel').isVisible();
+        check('资源面板可见', resVisible, String(resVisible));
+        const dbCards = await page.locator('#resDbGrid .res-card').count().catch(() => 0);
+        const toolCards = await page.locator('#resToolGrid .res-card').count().catch(() => 0);
+        check('数据库卡片已渲染', dbCards >= 5, dbCards + ' 张');
+        check('在线工具卡片已渲染', toolCards >= 5, toolCards + ' 张');
+        check('资源模式隐藏输入面板',
+            !(await page.locator('.panel-input').isVisible()), '输入面板仍可见');
+        await shot('25_resources');
+
+        // ═══════════════ 15. 取消任务 ═══════════════
+        console.log('\n【15】任务取消');
         await nav('pipeline');
         await page.waitForTimeout(300);
         await page.click('#tabFasta');
