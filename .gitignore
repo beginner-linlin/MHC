@@ -1,0 +1,34 @@
+# 预测工具二进制与数据（DTU 版权，自行下载，且超出 GitHub 100MB 限制）
+*.tar.gz
+*.tar
+data.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+package-lock.json.bak
+
+# 运行时产物
+logs/
+*.log
+*.pid
+run/
+*.sqlite3
+*.db
+
+# 测试导出物
+*.csv.bak
+mhc-app/run/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

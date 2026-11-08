@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MHC 预测工作台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231e5aa8'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='13' font-weight='bold' fill='white' text-anchor='middle'%3EMHC%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ───────────────────────── 顶栏 ───────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">MHC</div>
+      <div class="brand-text">
+        <h1>MHC 预测工作台</h1>
+        <p>NetMHCpan 4.2e · NetChop 3.1d · NetMHCstabpan 1.0</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="status-dot" id="healthDot" title="正在检查服务状态"></div>
+      <button class="btn btn-ghost" id="btnHistory">历史记录 <span class="badge" id="historyBadge">0</span></button>
+    </div>
+  </header>
+
+  <!-- ───────────────────────── 主体 ───────────────────────── -->
+  <div class="layout">
+
+    <!-- 左侧：模式导航 -->
+    <nav class="sidebar">
+      <button class="nav-item active" data-mode="pan">
+        <span class="nav-icon">◈</span>
+        <span class="nav-label">
+          <strong>MHC 结合预测</strong>
+          <em>NetMHCpan · 哪些肽能结合</em>
+        </span>
+      </button>
+      <button class="nav-item" data-mode="chop">
+        <span class="nav-icon">✂</span>
+        <span class="nav-label">
+          <strong>蛋白酶体切割</strong>
+          <em>NetChop · 哪些位置被切开</em>
+        </span>
+      </button>
+      <button class="nav-item" data-mode="stab">
+        <span class="nav-icon">◷</span>
+        <span class="nav-label">
+          <strong>稳定性预测</strong>
+          <em>NetMHCstabpan · 能停留多久</em>
+        </span>
+      </button>
+      <div class="nav-sep"></div>
+      <button class="nav-item" data-mode="pipeline">
+        <span class="nav-icon">⛓</span>
+        <span class="nav-label">
+          <strong>三步串联流水线</strong>
+          <em>切割 → 结合 → 稳定性</em>
+        </span>
+      </button>
+      <button class="nav-item" data-mode="mutant">
+        <span class="nav-icon">⚗</span>
+        <span class="nav-label">
+          <strong>突变肽筛选</strong>
+          <em>新抗原 · 找出突变产生的新肽</em>
+        </span>
+      </button>
+      <div class="sidebar-foot">
+        <div class="ver" id="versionInfo">版本加载中…</div>
+      </div>
+    </nav>
+
+    <!-- 中间：输入 -->
+    <section class="panel panel-input">
+      <div class="panel-head">
+        <h2 id="modeTitle">MHC 结合预测</h2>
+        <p id="modeDesc">预测肽段与 HLA 分子的结合亲和力，输出 EL 得分、排名与结合等级。</p>
+      </div>
+
+      <div class="panel-body">
+
+        <!-- 输入来源 -->
+        <div class="field">
+          <div class="field-head">
+            <label>输入序列</label>
+            <div class="field-actions">
+              <button class="chip active" id="tabPeptide" data-itype="peptide">多肽列表</button>
+              <button class="chip" id="tabFasta" data-itype="fasta">蛋白 FASTA</button>
+              <button class="chip" id="tabFile">上传文件</button>
+            </div>
+          </div>
+          <textarea id="inputText" spellcheck="false"
+            placeholder="每行一条肽，例如：&#10;SLYNTVATL&#10;GILGFVFTL&#10;MLLSVPLLL"></textarea>
+          <div class="input-meta">
+            <span id="inputStats">尚未输入</span>
+            <span class="grow"></span>
+            <button class="link" id="btnSamplePan">填入示例</button>
+            <button class="link" id="btnClearInput">清空</button>
+          </div>
+          <input type="file" id="fileInput" accept=".txt,.fa,.fasta,.faa,.csv,.tsv,.xlsx,.xls" hidden>
+          <div class="file-hint" id="fileHint" hidden></div>
+        </div>
+
+        <!-- 突变模式专用 -->
+        <div class="mutant-block" id="mutantBlock" hidden>
+          <div class="field">
+            <label>参考序列（野生型）</label>
+            <textarea id="refSeq" class="seq-area" spellcheck="false"
+              placeholder="粘贴野生型蛋白全长序列（仅字母，不含 > 头）"></textarea>
+          </div>
+          <div class="field">
+            <label>突变序列</label>
+            <textarea id="altSeq" class="seq-area" spellcheck="false"
+              placeholder="粘贴突变型蛋白全长序列，长度必须与参考序列一致"></textarea>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>肽长</label>
+              <div class="len-picker" id="mutLengths">
+                <button class="len" data-len="8">8</button>
+                <button class="len active" data-len="9">9</button>
+                <button class="len" data-len="10">10</button>
+                <button class="len" data-len="11">11</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn btn-ghost" id="btnLoadMutantSample">填入示例突变</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- HLA 选择 -->
+        <div class="field" id="alleleField">
+          <div class="field-head">
+            <label>HLA 等位基因</label>
+            <span class="hint" id="alleleCount">未选择</span>
+          </div>
+          <div class="allele-selected" id="alleleSelected"></div>
+          <div class="allele-picker">
+            <input type="text" id="alleleSearch" placeholder="搜索等位基因，如 A02、B07、H2-Kb…" autocomplete="off">
+            <div class="allele-dropdown" id="alleleDropdown" hidden></div>
+          </div>
+          <div class="preset-row" id="presetRow"></div>
+        </div>
+
+        <!-- 参数面板 -->
+        <div class="field params" id="paramsPanel"></div>
+
+        <!-- 提交 -->
+        <div class="submit-row">
+          <button class="btn btn-primary btn-lg" id="btnRun">
+            <span class="btn-spinner" hidden></span>
+            <span id="btnRunText">开始预测</span>
+          </button>
+          <button class="btn btn-ghost" id="btnCancel" hidden>取消</button>
+        </div>
+
+        <div class="alert" id="alertBox" hidden></div>
+      </div>
+    </section>
+
+    <!-- 右侧：结果 -->
+    <section class="panel panel-result">
+      <div class="result-head">
+        <div class="result-title">
+          <h2 id="resultTitle">结果</h2>
+          <p id="resultSub">提交任务后在此查看</p>
+        </div>
+        <div class="result-actions" id="resultActions" hidden>
+          <button class="btn btn-ghost btn-sm" id="btnExportCsv">导出 CSV</button>
+          <button class="btn btn-ghost btn-sm" id="btnExportXlsx">导出 xlsx</button>
+        </div>
+      </div>
+
+      <!-- 进度 -->
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-text">
+          <span id="progressStage">准备中</span>
+          <span id="progressMsg"></span>
+        </div>
+      </div>
+
+      <!-- 流水线步骤 -->
+      <div class="steps" id="stepsBox" hidden></div>
+
+      <!-- 汇总指标 -->
+      <div class="kpis" id="kpiBox" hidden></div>
+
+      <!-- 结果表工具条 -->
+      <div class="table-toolbar" id="tableToolbar" hidden>
+        <input type="text" id="tableSearch" placeholder="筛选肽段 / HLA / 蛋白…">
+        <select id="tableFilter">
+          <option value="all">全部结果</option>
+          <option value="sb">仅强结合 (SB)</option>
+          <option value="wb">强+弱结合 (SB/WB)</option>
+          <option value="binder">仅结合肽</option>
+        </select>
+        <span class="grow"></span>
+        <span class="row-count" id="rowCount"></span>
+      </div>
+
+      <!-- 结果区 -->
+      <div class="table-scroll" id="tableScroll">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">◈</div>
+          <h3>尚无结果</h3>
+          <p>在左侧输入序列并点击「开始预测」</p>
+        </div>
+        <table class="result-table" id="resultTable" hidden>
+          <thead id="resultThead"></thead>
+          <tbody id="resultTbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- ───────────────────────── 历史抽屉 ───────────────────────── -->
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="drawer" id="historyDrawer" hidden>
+    <div class="drawer-head">
+      <h2>历史记录</h2>
+      <button class="btn-icon" id="btnCloseDrawer">✕</button>
+    </div>
+    <div class="drawer-body" id="historyList"></div>
+    <div class="drawer-foot">
+      <button class="btn btn-ghost btn-sm" id="btnClearHistory">清空全部历史</button>
+    </div>
+  </aside>
+
+  <!-- ───────────────────────── Toast ───────────────────────── -->
+  <div class="toast-stack" id="toastStack"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
