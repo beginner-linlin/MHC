@@ -222,9 +222,11 @@ async function main() {
 
         await page.waitForSelector('.nav-item', { timeout: 15000 });
         const navCount = await page.locator('.nav-item').count();
-        check('6 个功能模式', navCount === 6, navCount + ' 个');
+        check('7 个功能模式', navCount === 7, navCount + ' 个');
         check('含「数据库与工具」入口',
             (await page.locator('.nav-item[data-mode="resources"]').count()) === 1);
+        check('含「智能助手」入口',
+            (await page.locator('.nav-item[data-mode="agent"]').count()) === 1);
 
         await page.waitForFunction(
             () => document.getElementById('healthDot')?.className.includes('ok'),
@@ -400,13 +402,7 @@ async function main() {
         await addAllele('A02:01');
         await shot('12_mutant_input');
 
-        await page.click('#btnRun');
-        await page.waitForFunction(() => {
-            const t = document.getElementById('resultTable');
-            return t && !t.hidden;
-        }, { timeout: 180000 });
-        await page.waitForTimeout(600);
-        n = await page.locator('#resultTbody tr').count();
+        n = await runAndWait(180000);
         check('突变筛选出结果', n > 0, n + ' 行');
         const mutTh = await tableHeaders();
         check('突变表含突变位点列', mutTh.some((x) => /突变/.test(x)), mutTh.join(' / '));
