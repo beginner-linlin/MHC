@@ -3,6 +3,18 @@
 > 一键整合 **NetMHCpan 4.2e / NetChop 3.1d / NetMHCstabpan 1.0** 三个免疫学预测工具的 Web 应用。
 > 双击启动，浏览器即用，局域网共享 —— 无需命令行。
 
+## 📥 下载（无需登录、无需 git）
+
+| 方式 | 链接 |
+|---|---|
+| **直接下载 ZIP**（推荐） | https://codeload.github.com/beginner-linlin/MHC/zip/refs/heads/main |
+| GitHub 主页 → 绿色 Code → Download ZIP | https://github.com/beginner-linlin/MHC |
+| git 克隆 | `git clone https://github.com/beginner-linlin/MHC.git` |
+
+- 仓库为 **public**，任何人可匿名下载/克隆，无需 GitHub 账号。
+- 若 `github.com` 主页打不开（网络原因），直接用上面的 **codeload ZIP 链接**下载，或切换网络后重试。
+- 下载解压后，按本页[「部署」](#部署)一节安装 DTU 学术工具与 WSL 环境即可运行。
+
 ![首页](docs/screenshots/01_home.png)
 
 ## 功能

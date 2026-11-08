@@ -35,18 +35,16 @@ function Write-Warn2($msg){ Write-Host "  [!]  $msg"   -ForegroundColor Yellow }
 function Write-Bad($msg)  { Write-Host "  [X]  $msg"   -ForegroundColor Red }
 
 function Test-PortListening([int]$port) {
+    # 纯 socket 检测，500ms 超时。
+    # 不用 Test-NetConnection：它在多网卡/网络异常时会吊死数分钟（ping+DNS+网卡枚举），
+    # 导致双击启动看似「无反应」。
     try {
-        $r = Test-NetConnection -ComputerName '127.0.0.1' -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
-        return [bool]$r
-    } catch {
-        try {
-            $c = New-Object Net.Sockets.TcpClient
-            $c.Connect('127.0.0.1', $port)
-            $ok = $c.Connected
-            $c.Close()
-            return $ok
-        } catch { return $false }
-    }
+        $c = New-Object Net.Sockets.TcpClient
+        $task = $c.ConnectAsync('127.0.0.1', $port)
+        $ok = $task.Wait(500) -and $c.Connected
+        $c.Close()
+        return $ok
+    } catch { return $false }
 }
 
 function Wait-Http([string]$url, [int]$timeoutSec = 40) {
@@ -165,15 +163,15 @@ Write-Host '[4/4] 准备访问地址'
 
 $lanIps = @()
 try {
-    $lanIps = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    # 只查已启用、可单播的 IPv4 地址；超时保护由 -ErrorAction 与外层 try 提供
+    $lanIps = @(Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp,Manual -ErrorAction SilentlyContinue |
         Where-Object {
             $_.IPAddress -notlike '127.*' -and
             $_.IPAddress -notlike '169.254.*' -and
-            $_.IPAddress -notlike '172.27.*' -and
-            $_.PrefixOrigin -ne 'WellKnown'
+            $_.IPAddress -notlike '172.27.*'
         } |
         Sort-Object -Property { if ($_.InterfaceAlias -match '以太|Ethernet') { 0 } elseif ($_.InterfaceAlias -match 'WLAN|Wi-Fi') { 1 } else { 2 } } |
-        Select-Object -ExpandProperty IPAddress -Unique
+        Select-Object -ExpandProperty IPAddress -Unique)
 } catch { }
 
 $localUrl = "http://127.0.0.1:$ProxyPort/"
@@ -214,7 +212,27 @@ Write-Host '  查看日志：双击「查看日志.bat」'      -ForegroundColor
 Write-Host ''
 
 if (-not $NoBrowser) {
-    try { Start-Process $localUrl } catch { Write-Warn2 '无法自动打开浏览器，请手动访问上面的地址。' }
+    # 强制新窗口 + 前台弹出：直接调 Edge/Chrome 可执行文件。
+    # 不能只 Start-Process $url —— 那会把页面塞进已存在的后台 Edge 窗口，用户前台看不到，
+    # 表现为「双击无反应」。
+    $opened = $false
+    foreach ($exe in @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+    )) {
+        if (Test-Path $exe) {
+            try {
+                Start-Process -FilePath $exe -ArgumentList '--new-window', $localUrl
+                $opened = $true
+                break
+            } catch { }
+        }
+    }
+    if (-not $opened) {
+        try { Start-Process $localUrl } catch { Write-Warn2 '无法自动打开浏览器，请手动复制上面的地址到浏览器。' }
+    }
 }
 
 Start-Sleep -Seconds 2
