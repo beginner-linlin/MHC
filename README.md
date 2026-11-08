@@ -25,13 +25,37 @@
 | **酶切预测** | NetChop 3.1d | 蛋白酶体切割位点（C-term 3.0 / 20S 3.0 双模型） |
 | **稳定性预测** | NetMHCstabpan 1.0 | pMHC 复合物半衰期 + 综合评分 |
 | **流水线** | 三引擎串联 | 酶切 → 候选肽 → 结合 → 稳定性，一次跑完 |
-| **突变肽筛选** | NetMHCpan + stabpan | 野生型/突变型比对，只预测覆盖突变位点的肽（新抗原筛选） |
+| **突变肽筛选** | NetMHCpan + stabpan | 野生型/突变型比对，只预测覆盖突变位点的肽 |
+| **新抗原一键筛选** | UniProt + 三引擎串联 | **只写突变名**（`KRAS G12D`），自动取序列 → 造突变肽 → 三步串联 |
+| **资源中心** | GDC / IEDB | TCGA 突变检索、IEDB 云端预测、工具与数据库清单 |
+| **智能助手** | OpenAI 兼容模型 | 自然语言驱动上述工具（UniProt/ClinVar/PubMed/GDC 等 9 个工具） |
 
 - 10,491 个 HLA 等位基因全量搜索（HLA-A/B/C/E/G）
 - 多肽列表 / 蛋白 FASTA / CSV / Excel 输入，多等位基因批量预测
 - 结果表格：搜索、SB/WB 筛选、点列头排序、CSV 与 xlsx 导出
 - 任务历史存档（SQLite），可回看可重导出
 - 局域网访问：同一网络下其他人浏览器直连，零安装
+
+### 新抗原一键筛选（v1.3.0）
+
+把设计书里的「突变位点 → 候选肽 → 多维打分」压成一条链路：
+
+```
+GDC 检索 TCGA-PAAD 真实突变  →  一键导入（自动过滤错义突变）
+   ↓
+UniProt REST 按基因取规范序列（gene_exact + reviewed:true，本地 JSON 缓存）
+   ↓
+按 HGVS 氨基酸改变构造突变蛋白
+   ↓
+NetChop 酶切（切割位点作候选肽 C 端标注）
+   ↓
+NetMHCpan 突变肽 + 野生型对照（算 Δ排名）
+   ↓
+NetMHCstabpan 半衰期 + 综合排名
+```
+
+实测（TCGA-PAAD 真实 KRAS 突变 × 6 HLA）：8 个突变 → 152 条候选肽 → 6.1 s → 23 行结果，7 SB + 16 WB；
+Top1 `KRAS G12V / VVGAVGVGK / HLA-A*11:01 / EL 0.172% / 112.3 nM / SB`。
 
 ![流水线结果](docs/screenshots/10_pipeline_result.png)
 
@@ -107,11 +131,15 @@ NetMHCpan 4.2e · NetChop 3.1d · NetMHCstabpan 1.0（/opt/bio/）
 
 | 套件 | 脚本 | 结果 |
 |---|---|---|
-| 浏览器端到端（真实 Chrome，13 组 42 断言） | `mhc-app/host/browser_test.js` | 42/42 |
+| 浏览器端到端（真实 Chrome，13 组 54 断言） | `mhc-app/host/browser_test.js` | 54/54 |
+| 资源中心（GDC 检索 / IEDB / 工具清单） | `mhc-app/host/res_test.js` | 35/35 |
+| 新抗原模式（UniProt / 预览 / 校验 / 导入） | `mhc-app/host/neo_test.js` | 36/36 |
+| 胰腺癌真实场景（GDC→UniProt→三步串联→导出→历史） | `mhc-app/host/paad_e2e.js` | 31/31 |
 | 真实场景（FLU/EGFR/KRAS/P53/新冠 RBD 等真实蛋白） | `scripts/130_real_scenarios.sh` | 33/33 |
 | 模式感知输入校验 | `scripts/133_validate_mode_aware.sh` | 9/9 |
 
-性能参考：300 aa 蛋白 × 1 等位基因 0.4 s；500 aa 流水线（9,10 肽长 × 2 等位基因）2.0 s。
+性能参考：300 aa 蛋白 × 1 等位基因 0.4 s；500 aa 流水线（9,10 肽长 × 2 等位基因）2.0 s；
+新抗原 5 突变 × 4 HLA 全链路（含 UniProt 取序列）2.4 s。
 
 ## 目录结构
 
@@ -132,6 +160,19 @@ NetMHCpan 4.2e · NetChop 3.1d · NetMHCstabpan 1.0（/opt/bio/）
 - 稳定性模式肽长 <7 或 >20 时亲和力列为空（引擎限制，前端已警告）
 - netMHCstabpan 的亲和力列（`-ia`）通过兼容层提供：原版要求 NetMHCpan-2.8（已停止分发），本应用用 4.2 模拟等价输出，稳定性列与官方期望输出逐字节一致
 - Flask 开发服务器承载（局域网小团队场景足够，非公网生产级）
+- 新抗原模式依赖 UniProt / GDC 公网可达；离线时 UniProt 命中本地缓存仍可用，未缓存基因会失败
+- GNAS 在 UniProt reviewed 里只有 `P84996 (ALEX_HUMAN)` 一个代表条目，位置编号与 GDC 的 GNAS 突变可能错位，程序会记 warning 并强制按给定替换应用
+
+## 测试
+
+| 套件 | 脚本 | 断言数 | 结果 |
+|---|---|---|---|
+| 浏览器全量回归（13 组） | `mhc-app/host/browser_test.js` | 54 | 54/54 |
+| 资源中心（GDC/IEDB/清单） | `mhc-app/host/res_test.js` | 35 | 35/35 |
+| 新抗原模式 | `mhc-app/host/neo_test.js` | 36 | 36/36 |
+| 胰腺癌真实场景（GDC→UniProt→三步串联→导出→历史） | `mhc-app/host/paad_e2e.js` | 31 | 31/31 |
+| 真实蛋白场景（脚本层） | `scripts/130_real_scenarios.sh` | 33 | 33/33 |
+| 模式感知输入校验 | `scripts/133_validate_mode_aware.sh` | 9 | 9/9 |
 
 ## 致谢
 

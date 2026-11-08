@@ -178,14 +178,20 @@
 
 资源清单里 **GDC-PAAD** 卡片有「在此检索突变」按钮，**IEDB Tools** 卡片有「在此调用预测」按钮，点一下直接跳到对应页签，不用来回找。
 
-典型工作流：
+**GDC 检索完成后**，结果表上方会出现 **「一键导入新抗原筛选 →」** 按钮（仅在本次检索含错义突变时出现，按钮旁会写明可导入几条）。点它工作台会：
+
+1. 过滤出 `consequence_type` 含 missense、且 `aa_change` 形如 `G12D` 的记录，去重后最多取 50 条；
+2. 自动切到「新抗原一键筛选」模式，把 `基因 突变` 逐行填进突变列表；
+3. 之后点「预览蛋白与候选肽」即可看 UniProt 条目与候选肽，点「开始预测」跑完整三步串联。
+
+典型工作流（全部在工作台内完成，不需要复制粘贴序列）：
 
 ```
-GDC 检索 KRAS 突变（拿到 G12D）
-   ↓ 复制突变信息
-突变肽筛选模式：粘野生型 KRAS + 突变型 KRAS，选 HLA 等位基因
-   ↓ 拿到候选突变肽
-流水线模式：验证切割 + 结合 + 稳定性
+数据库与工具 → GDC 检索 KRAS（拿到 9 条真实突变）
+   ↓ 点「一键导入新抗原筛选 →」
+新抗原一键筛选：自动取 UniProt P01116、构造突变肽、选 HLA 等位基因
+   ↓ 点「开始预测」
+自动跑完 UniProt → NetChop → NetMHCpan → NetMHCstabpan 五步
    ↓ 想交叉验证
 数据库与工具 → IEDB 云端预测，同一条肽再跑一遍
 ```
@@ -210,7 +216,7 @@ SMAD4 p.Arg361Cys
 
 点 **「预览蛋白与候选肽」** 可先确认：每条突变对应哪个 UniProt 条目（如 `KRAS(P01116, 189aa)`）、切出多少条候选肽。确认无误再点「开始预测」。
 
-也可以点 **「从 GDC 导入」**：直接在 TCGA-PAAD（胰腺癌）里检索 KRAS/TP53 等基因的真实突变，勾选后一键填入。
+也可以点 **「从 GDC 导入」**：直接在 TCGA-PAAD（胰腺癌）里检索 KRAS/TP53 等基因的真实突变，勾选后一键填入。（等价的另一条路径：先在「数据库与工具 → GDC 突变检索」查好，再点结果表上方的「一键导入新抗原筛选 →」。）
 
 ### 流程（自动跑完五步）
 
@@ -241,6 +247,20 @@ SMAD4 p.Arg361Cys
 - **KRAS G12D 对 HLA-A\*02:01 是非结合的**——这是生物学事实，不是软件问题。KRAS 12 位点应优先用 **HLA-A\*11:01**（`VVGAVGVGK`，排名 0.172，SB）或 **HLA-A\*03:01**。
 - 肽长建议同时选 9 和 10（MHC-I 常见长度），覆盖更全。
 - 参数「只在切割位点取肽」默认**关闭**（突变位点前后全滑窗），打开后只保留 C 端在切割位点 ±1 的肽，候选更少但更接近真实呈递。
+
+### 实测参考（TCGA-PAAD 真实突变）
+
+8 个真实 KRAS 错义突变（Y157C / Q61H / Q61R / G12D / G12V / G12R / G12S / G12C）× 6 个 HLA（A\*02:01、A\*11:01、A\*24:02、B\*07:02、B\*08:01、C\*07:02）：
+
+| 指标 | 结果 |
+|---|---|
+| 耗时 | 6.1 s |
+| 候选肽 | 152 条 |
+| 结果行 | 23 行（7 SB + 16 WB） |
+| Top1 | `KRAS G12V / VVGAVGVGK / HLA-A*11:01 / EL 0.172% / 112.3 nM / SB / 半衰期 4.46 h / 综合 0.51%` |
+| 突变特异肽 | 10 条，如 `GARGVGKSAL`（HLA-B\*07:02，突变型 EL 0.447% vs 野生型 2.85%，Δ +2.40） |
+
+> 若只想看「突变制造出来的新结合」，把参数「只要突变特异肽」打开：只保留 Δ排名 > 0 且野生型本身不结合的行。
 
 ---
 
@@ -382,6 +402,10 @@ SB / WB 之外，含非标准残基的行带琥珀底色与 ⚠ 角标；「跳�
 | GDC 检索一直显示「查询中…」 | GDC 官方 API 较慢，TP53 这类 79 条突变的查询要 10–30 秒；超过 60 秒再排查网络 |
 | IEDB 预测失败 | 云端服务偶发排队；先确认等位基因带星号（`HLA-A*02:01`），MHC-II 序列长度 ≥15 |
 | GDC 检索报「无法连接远端服务」 | 国内访问 api.gdc.cancer.gov 偶发超时，重试一次；或换用资源清单里的外链直接开网页查 |
+| 新抗原模式报「无法从 UniProt 取到序列」 | 该基因名不在 UniProt reviewed 里；换成标准基因符号（如 `CDKN2A` 而非 `P16`），或在 UniProt 官网确认规范登录号后改用登录号（如 `P01116`） |
+| 新抗原结果里野生型对照全为空 | 参数「含野生型对照」被关掉了；打开后会多出野生型排名/亲和力/Δ排名三列 |
+| 新抗原提示「已按给定替换强制应用」 | 该基因的 UniProt 规范序列与突变位点编号不一致（异构体差异，GNAS 常见）；程序按你给的 ref→alt 强制替换，结果仍可用，但建议核对位点编号 |
+| 新抗原候选肽为 0 | 突变位置太靠蛋白两端，滑窗切不出完整肽；或「只在切割位点取肽」开着但该区域无切割位点——把它关掉再跑 |
 
 ---
 
@@ -400,9 +424,9 @@ WSL Ubuntu-24.04 内 Flask 后端（/opt/bio/app，Python 3.12 + Flask 3.1 + SQL
 /opt/bio/netMHCpan-4.2 · /opt/bio/netchop-3.1 · /opt/bio/netMHCstabpan-1.0
 ```
 
-- 后端源码：`整合\mhc-workbench\mhc-app\`（改代码后跑 `scripts\120_sync_static.sh` 同步到 WSL 并重启；资源中心相关改动跑 `scripts\160_deploy_resources.sh`）
-- 数据库：WSL 内 `/opt/bio/app/data/mhc.sqlite3`（任务历史）
-- 测试套件：`mhc-app\host\browser_test.js`（浏览器 42 项）、`mhc-app\host\res_test.js`（资源中心 35 项）、`scripts\130_real_scenarios.sh`（真实场景 33 项）、`scripts\165_full_resources_test.sh`（资源 API 33 项）
+- 后端源码：`整合\mhc-workbench\mhc-app\`（改代码后跑 `scripts\120_sync_static.sh` 同步到 WSL 并重启；资源中心相关改动跑 `scripts\160_deploy_resources.sh`；新抗原相关改动跑 `scripts\186_deploy_neo.sh`，它会带版本号备份到 `/opt/bio/_backup_*`）
+- 数据库：WSL 内 `/opt/bio/app/data/mhc.sqlite3`（任务历史）；UniProt 序列缓存 `/opt/bio/app/data/uniprot_cache.json`
+- 测试套件：`mhc-app\host\browser_test.js`（浏览器 54 项）、`mhc-app\host\res_test.js`（资源中心 35 项）、`mhc-app\host\neo_test.js`（新抗原 36 项）、`mhc-app\host\paad_e2e.js`（胰腺癌真实场景 31 项）、`scripts\130_real_scenarios.sh`（真实场景 33 项）、`scripts\165_full_resources_test.sh`（资源 API 33 项）
 
 ---
 
@@ -415,3 +439,5 @@ WSL Ubuntu-24.04 内 Flask 后端（/opt/bio/app，Python 3.12 + Flask 3.1 + SQL
 | 292 肽 × 4 等位基因 | 0.5 秒 |
 | 500 aa 蛋白流水线（9,10 肽长 × 2 等位基因） | 2.0 秒 |
 | KRAS G12D 突变筛选（54 条候选肽） | 1.7 秒 |
+| 新抗原 5 突变 × 4 HLA（含 UniProt 取序列 + 三步串联） | 2.4 秒 |
+| 新抗原 8 个真实 KRAS 突变 × 6 HLA | 6.1 秒 |

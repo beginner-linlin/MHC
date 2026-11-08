@@ -38,14 +38,24 @@ async function shot(page, name) {
     const projMeta = await page.locator('#gdcMeta').textContent().catch(() => '');
     ok('GDC 查询表单就绪', projMeta !== undefined, `="${String(projMeta).slice(0, 60)}"`);
 
+    // 统一的 GDC 等待：等查询结束（按钮恢复可用）且元信息出现「条突变」
+    async function waitGdc(re) {
+      await page.waitForFunction(
+        () => {
+          const btn = document.getElementById('btnGdcSearch');
+          const m = document.getElementById('gdcMeta');
+          return btn && !btn.disabled && m && /条突变|失败/.test(m.textContent);
+        },
+        null, { timeout: 120000 },
+      );
+      const t = await page.locator('#gdcMeta').textContent();
+      if (re) ok(`GDC 查询结果匹配 ${re}`, re.test(t), `="${t.slice(0, 90)}"`);
+      return t;
+    }
+
     // 查 KRAS
     await page.locator('#gdcGeneChips .chip', { hasText: 'KRAS' }).first().click();
-    await page.waitForFunction(
-      () => { const m = document.getElementById('gdcMeta'); return m && /条突变/.test(m.textContent) && !/查询中/.test(m.textContent); },
-      null, { timeout: 90000 },
-    );
-    const krasMeta = await page.locator('#gdcMeta').textContent();
-    ok('KRAS 突变数 9 条', /9\s*条突变/.test(krasMeta), `="${krasMeta.slice(0, 90)}"`);
+    const krasMeta = await waitGdc(/9\s*条突变/);
     const krasRows = await page.locator('#gdcTbody tr').count();
     ok('KRAS 结果表有行', krasRows === 9, `=${krasRows}`);
     await shot(page, 'p01_gdc_kras');
@@ -53,32 +63,19 @@ async function shot(page, name) {
     // 查 TP53
     await page.locator('#gdcGene').fill('TP53');
     await page.locator('#btnGdcSearch').click();
-    await page.waitForFunction(
-      () => { const m = document.getElementById('gdcMeta'); return m && /条突变/.test(m.textContent) && !/查询中/.test(m.textContent); },
-      null, { timeout: 90000 },
-    );
-    const tp53Meta = await page.locator('#gdcMeta').textContent();
-    ok('TP53 突变数 79 条', /79\s*条突变/.test(tp53Meta), `="${tp53Meta.slice(0, 90)}"`);
+    const tp53Meta = await waitGdc(/79\s*条突变/);
     const tp53Rows = await page.locator('#gdcTbody tr').count();
     ok('TP53 结果表有行', tp53Rows > 20, `=${tp53Rows}`);
 
     // 查 SMAD4
     await page.locator('#gdcGene').fill('SMAD4');
     await page.locator('#btnGdcSearch').click();
-    await page.waitForFunction(
-      () => { const m = document.getElementById('gdcMeta'); return m && /条突变/.test(m.textContent) && !/查询中/.test(m.textContent); },
-      null, { timeout: 90000 },
-    );
-    const smad4Meta = await page.locator('#gdcMeta').textContent();
-    ok('SMAD4 突变数 34 条', /34\s*条突变/.test(smad4Meta), `="${smad4Meta.slice(0, 90)}"`);
+    const smad4Meta = await waitGdc(/34\s*条突变/);
 
     // 回到 KRAS 准备导入
     await page.locator('#gdcGene').fill('KRAS');
     await page.locator('#btnGdcSearch').click();
-    await page.waitForFunction(
-      () => { const m = document.getElementById('gdcMeta'); return m && /9\s*条突变/.test(m.textContent) && !/查询中/.test(m.textContent); },
-      null, { timeout: 90000 },
-    );
+    await waitGdc(/9\s*条突变/);
 
     // ---------- 2. 一键导入新抗原模式 ----------
     ok('GDC 结果页出现「一键导入」按钮', await page.locator('#btnGdcToNeo').isVisible());
@@ -190,10 +187,12 @@ async function shot(page, name) {
 
     // ---------- 8. 导出 ----------
     const [dl] = await Promise.all([
-      page.waitForEvent('download', { timeout: 30000 }),
+      page.waitForEvent('download', { timeout: 60000 }),
       page.locator('#btnExportXlsx').click(),
     ]);
-    const outPath = path.join(__dirname, '..', 'run', 'paad_real.xlsx');
+    const runDir = path.join(__dirname, '..', 'run');
+    fs.mkdirSync(runDir, { recursive: true });
+    const outPath = path.join(runDir, `paad_real_${Date.now()}.xlsx`);
     await dl.saveAs(outPath);
     const sz = fs.statSync(outPath).size;
     ok('XLSX 导出成功', sz > 4000, `=${sz} B · ${dl.suggestedFilename()}`);

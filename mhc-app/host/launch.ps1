@@ -107,12 +107,25 @@ if ($status -match 'RUNNING') {
     }
 }
 
-if (-not (Test-PortListening $BackendPort)) {
-    Write-Bad "后端端口 $BackendPort 仍未监听。"
+# WSL2 NAT 模式下 Windows→WSL 的 localhost 转发有 1–3 秒延迟，
+# 单次探测会误报「端口未监听」→ 改为轮询（最多 20 秒）
+$backendReady = $false
+for ($i = 0; $i -lt 40; $i++) {
+    if (Test-PortListening $BackendPort) { $backendReady = $true; break }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $backendReady) {
+    Write-Bad "后端端口 $BackendPort 仍未监听（等待 20 秒）。"
     Write-Host "      可查看日志：wsl -d $Distro -u root -- bash $backendScript logs 40" -ForegroundColor DarkGray
     exit 1
 }
-Write-Ok "后端端口 $BackendPort 已监听"
+# 端口通了再等 HTTP 真正可用（Flask 首次请求要加载工具版本）
+if (-not (Wait-Http "http://127.0.0.1:$BackendPort/api/health" 25)) {
+    Write-Bad "后端端口已监听但 /api/health 未响应（等待 25 秒）。"
+    Write-Host "      可查看日志：wsl -d $Distro -u root -- bash $backendScript logs 40" -ForegroundColor DarkGray
+    exit 1
+}
+Write-Ok "后端端口 $BackendPort 已监听，健康检查通过"
 
 # ───────────────────────── 3. 启动 Node 代理 ─────────────────────────
 Write-Host ''
