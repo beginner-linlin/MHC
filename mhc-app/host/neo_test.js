@@ -36,7 +36,7 @@ async function shot(page, name) {
     await page.goto(URL, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('.nav-item', { timeout: 15000 });
     const navCount = await page.locator('.nav-item').count();
-    ok('侧栏 9 个模式', navCount === 9, `=${navCount}`);
+    ok('侧栏 8 个模式', navCount === 8, `=${navCount}`);
     const navTexts = await page.locator('.nav-item').allTextContents();
     ok('存在「新抗原」入口', navTexts.some((t) => t.includes('新抗原')),
       `=${navTexts.map((t) => t.replace(/\s+/g, ' ').trim()).join(' | ').slice(0, 160)}`);
@@ -102,25 +102,35 @@ async function shot(page, name) {
     await shot(page, 'n04_preview');
 
     // ---------- 7. 选 HLA ----------
-    const presets = await page.locator('#presetRow .chip, #presetRow button').count();
+    const presets = await page.locator('#presetRow .preset-btn').count();
     ok('有 HLA 预设按钮', presets > 0, `=${presets}`);
-    if (presets > 0) {
-      await page.locator('#presetRow .chip, #presetRow button').first().click();
-      await page.waitForTimeout(600);
+    let selected = await page.locator('#alleleSelected .allele-tag').count();
+    ok('默认已选中至少一个 HLA', selected > 0, `=${selected}`);
+    if (selected === 0 && presets > 0) {
+      await page.locator('#presetRow .preset-btn').first().click();
+      await page.waitForTimeout(500);
+      selected = await page.locator('#alleleSelected .allele-tag').count();
     }
-    let selected = await page.locator('#alleleSelected .allele-tag, #alleleSelected .tag, #alleleSelected > *').count();
-    if (selected === 0) {
-      // 兜底：搜索框手动加
-      await page.locator('#alleleSearch').fill('A02:01');
-      await page.waitForTimeout(600);
-      const dd = await page.locator('#alleleDropdown [data-allele], #alleleDropdown .allele-opt').count();
-      if (dd > 0) {
-        await page.locator('#alleleDropdown [data-allele], #alleleDropdown .allele-opt').first().click();
-        await page.waitForTimeout(400);
-      }
-      selected = await page.locator('#alleleSelected > *').count();
+    // 再加一个，验证可以多选（点击未选中的预设）
+    const onCount = await page.locator('#presetRow .preset-btn.on').count();
+    const offBtns = page.locator('#presetRow .preset-btn:not(.on)');
+    if (await offBtns.count()) {
+      await offBtns.first().click();
+      await page.waitForTimeout(400);
     }
-    ok('已选中 HLA', selected > 0, `=${selected}`);
+    const selected2 = await page.locator('#alleleSelected .allele-tag').count();
+    ok('点击可追加第二个 HLA', selected2 === selected + 1, `=${selected}→${selected2}`);
+    const countTxt = await page.locator('#alleleCount').textContent();
+    ok('HLA 计数与标签一致', countTxt.includes(`已选 ${selected2} 个`), `="${countTxt}"`);
+    // 再点一次同一按钮应取消（toggle）
+    if (await offBtns.count()) {
+      await page.locator('#presetRow .preset-btn.on').last().click();
+      await page.waitForTimeout(400);
+      const selected3 = await page.locator('#alleleSelected .allele-tag').count();
+      ok('再点一次可取消选择', selected3 === selected2 - 1, `=${selected2}→${selected3}`);
+      await page.locator('#presetRow .preset-btn:not(.on)').first().click();
+      await page.waitForTimeout(400);
+    }
     await shot(page, 'n05_alleles');
 
     // ---------- 8. 运行完整任务 ----------

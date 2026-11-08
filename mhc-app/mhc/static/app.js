@@ -1657,6 +1657,17 @@ async function searchGdc() {
     if (!resState.gdcRows.length) {
       meta.innerHTML += ' — 没有匹配的突变，换基因或去掉过滤条件再试';
     }
+    // 有可导入的错义突变时，显示「一键导入新抗原筛选」按钮
+    const act = $('gdcActions');
+    if (act) {
+      const nMiss = resState.gdcRows.filter((r) =>
+        /missense/i.test(String(r.consequence_type || '')) &&
+        /^(?:p\.)?[A-Z]\d+[A-Z*]$/.test(String(r.aa_change || '').trim())
+      ).length;
+      act.hidden = nMiss === 0;
+      const hint = act.querySelector('.res-actions-hint');
+      if (hint && nMiss) hint.textContent = `${nMiss} 个错义突变可导入 · 自动取 UniProt 序列并跑三步串联`;
+    }
   } catch (e) {
     meta.textContent = '查询失败：' + e.message;
     toast(e.message, 'err');
@@ -1786,6 +1797,8 @@ function bindResourceEvents() {
   });
   $('btnGdcSearch').onclick = searchGdc;
   $('gdcGene').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGdc(); });
+  const bg2 = $('btnGdcToNeo');
+  if (bg2) bg2.onclick = neoFromGdc;
   $('btnIedbRun').onclick = runIedb;
   $('btnIedbSample').onclick = () => {
     $('iedbInput').value = SAMPLES.pep;
@@ -1954,7 +1967,7 @@ function neoFromGdc() {
     const aa = String(r.aa_change || '').trim();
     const gene = String(r.gene || '').trim();
     if (!gene || !aa) return;
-    const m = aa.match(/^p\.?([A-Z])(\d+)([A-Z*])$/);
+    const m = aa.match(/^(?:p\.)?([A-Z])(\d+)([A-Z*])$/);
     if (!m) return;
     const key = `${gene} ${m[1]}${m[2]}${m[3]}`;
     if (seen.has(key)) return;
@@ -1980,6 +1993,12 @@ function bindNeoEvents() {
   if (bs) bs.onclick = neoFillSample;
   const bg = $('btnNeoFromGdc');
   if (bg) bg.onclick = neoFromGdc;
+  // 供浏览器端到端测试与外部脚本调用
+  window.__mhc = Object.assign(window.__mhc || {}, {
+    neoFromGdc, neoFillSample, neoPreview, updateNeoStats, setMode,
+    get resState() { return resState; },
+    get state() { return state; },
+  });
 }
 
 // ─────────────────────────── 事件绑定 ───────────────────────────
@@ -2115,13 +2134,43 @@ async function agentEnsureSession() {
 
 async function agentLoadCfg() {
   try {
+    // 先拉预设列表（免费模型一键选）
+    const pr = await fetch('/api/agent/presets');
+    const pd = await pr.json();
+    const presets = pd.presets || {};
+    const sel = $('agentPreset');
+    if (sel && Object.keys(presets).length) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">— 手动填写 —</option>' +
+        Object.entries(presets).map(([k, v]) =>
+          `<option value="${k}">${v.label}</option>`).join('');
+      // 保持已选（若之前存过 preset）
+      if (cur) sel.value = cur;
+    }
     const r = await fetch('/api/agent/config');
     const d = await r.json();
     const c = d.config || {};
     $('agentBaseUrl').value = c.base_url || '';
     $('agentModel').value = c.model || '';
+    if (c.preset && $('agentPreset')) $('agentPreset').value = c.preset;
     $('agentCfgStatus').textContent = c.has_key ? `已配置 (${c.key_hint || 'key'})` : '未配置 API Key';
     if (c.base_url) $('agentConfigBox').hidden = true;  // 已有配置则不展开
+  } catch (e) { /* ignore */ }
+}
+
+// 预设下拉选择 → 自动填充 URL/模型 + 提示
+async function agentOnPreset(select) {
+  const key = select.value;
+  if (!key) { $('agentPresetHint').textContent = ''; return; }
+  try {
+    const r = await fetch('/api/agent/presets');
+    const pd = await r.json();
+    const p = (pd.presets || {})[key];
+    if (p) {
+      $('agentBaseUrl').value = p.base_url || '';
+      $('agentModel').value = p.model || '';
+      $('agentPresetHint').textContent = p.hint || '';
+    }
   } catch (e) { /* ignore */ }
 }
 
@@ -2132,11 +2181,12 @@ function agentCloseConfig() {
 }
 
 async function agentSaveCfg() {
+  const preset = $('agentPreset') ? $('agentPreset').value : '';
   const base_url = $('agentBaseUrl').value.trim();
   const api_key = $('agentApiKey').value.trim();
   const model = $('agentModel').value.trim();
   if (!base_url || !model) { toast('请填写 Base URL 与模型名', 'err'); return; }
-  const payload = { base_url, model };
+  const payload = { base_url, model, preset };
   if (api_key) payload.api_key = api_key;
   try {
     const r = await fetch('/api/agent/config', {
@@ -2283,6 +2333,8 @@ document.addEventListener('DOMContentLoaded', function agentBind() {
   if (!document.getElementById('btnAgentSend')) return;
   document.getElementById('btnAgentSend').onclick = agentSend;
   document.getElementById('btnAgentConfig').onclick = agentOpenConfig;
+  const psel = document.getElementById('agentPreset');
+  if (psel) psel.addEventListener('change', () => agentOnPreset(psel));
   document.getElementById('btnAgentCfgCancel').onclick = agentCloseConfig;
   document.getElementById('btnAgentSaveCfg').onclick = agentSaveCfg;
   const ai = document.getElementById('agentInput');

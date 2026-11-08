@@ -60,7 +60,49 @@ _CONSOLE_HOST_HINTS = {
     "console.moonshot.cn": "https://api.moonshot.cn/v1",
     "bigmodel.cn": "https://open.bigmodel.cn/api/paas/v4",
     "bailian.console.aliyun.com": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "cloud.siliconflow.cn": "https://api.siliconflow.cn/v1",
+    "siliconflow.cn": "https://api.siliconflow.cn/v1",
 }
+
+# 免费/低成本模型预设（base_url + 推荐 model）。用户只需填 API key。
+MODEL_PRESETS = {
+    "siliconflow": {
+        "label": "SiliconFlow 免费 · Qwen2.5-7B-Instruct",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct",
+        "hint": "登录 https://cloud.siliconflow.cn 创建 API 密钥（新用户有免费额度），填入下方 Key 即可",
+    },
+    "siliconflow-deepseek": {
+        "label": "SiliconFlow · DeepSeek-V3",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "deepseek-ai/DeepSeek-V3",
+        "hint": "需账户有额度；推理质量更高",
+    },
+    "deepseek": {
+        "label": "DeepSeek 官方",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "hint": "platform.deepseek.com 注册拿 key",
+    },
+    "glm": {
+        "label": "智谱 GLM-4-Flash（免费）",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+        "hint": "open.bigmodel.cn 实名后可免费使用 glm-4-flash",
+    },
+    "qwen": {
+        "label": "阿里云百炼 Qwen（免费额度）",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "hint": "bailian.console.aliyun.com 开通后领免费额度",
+    },
+}
+
+
+def get_model_presets() -> dict:
+    """返回预设清单（含 label/base_url/model/hint），供前端下拉选择。"""
+    return {k: {"label": v["label"], "base_url": v["base_url"], "model": v["model"],
+                "hint": v.get("hint", "")} for k, v in MODEL_PRESETS.items()}
 
 
 def _extract_title(html: str) -> str:

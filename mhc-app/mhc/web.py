@@ -1262,11 +1262,25 @@ def agent_save_config():
         if k in new_cfg:
             val = (new_cfg.get(k) or "").strip()
             if k == "preset":
-                val = new_cfg.get(k)  # preset 允许空串（切换预设）
+                val = new_cfg.get(k) or ""  # 允许空串
             if val or k == "preset":
                 cur[k] = val
+    # 选了预设且没手动填 base_url/model → 自动从预设填充
+    preset_key = cur.get("preset") or ""
+    preset = agent.MODEL_PRESETS.get(preset_key) if preset_key else None
+    if preset:
+        if not cur.get("base_url"):
+            cur["base_url"] = preset["base_url"]
+        if not cur.get("model"):
+            cur["model"] = preset["model"]
     agent.save_agent_config({k: cur[k] for k in allowed if k in cur})
     return jsonify({"ok": True, "config": agent.get_agent_config_public()})
+
+
+@app.get("/api/agent/presets")
+def agent_get_presets():
+    from . import agent
+    return jsonify({"ok": True, "presets": agent.get_model_presets()})
 
 
 @app.get("/api/agent/config")
