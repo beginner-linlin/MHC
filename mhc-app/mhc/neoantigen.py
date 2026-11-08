@@ -173,16 +173,26 @@ def normalize_mutation(raw: Any) -> dict | None:
 
 
 def _http_get(url: str, timeout: int = TIMEOUT) -> str:
+    """GET 文本，对瞬时网络错误重试（UniProt 偶发连接重置/超时）。"""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raise ResourceError(f"UniProt 返回 HTTP {exc.code}", detail=url, status=502) from exc
-    except urllib.error.URLError as exc:
-        raise ResourceError("无法连接 UniProt（网络或 DNS 不通）", detail=str(exc.reason), status=502) from exc
-    except TimeoutError as exc:
-        raise ResourceError("UniProt 响应超时", detail=f"{timeout} 秒", status=504) from exc
+    last: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            err = ResourceError(f"UniProt 返回 HTTP {exc.code}", detail=url, status=502)
+            if exc.code != 429 and exc.code < 500:
+                raise err from exc
+            last = err
+        except urllib.error.URLError as exc:
+            last = ResourceError("无法连接 UniProt（网络或 DNS 不通）", detail=str(exc.reason), status=502)
+        except (TimeoutError, OSError) as exc:
+            last = ResourceError("UniProt 响应超时或连接中断", detail=f"{timeout} 秒 / {type(exc).__name__}", status=504)
+        if attempt < 2:
+            time.sleep(0.8 * (2**attempt))
+    assert last is not None
+    raise last
 
 
 def _parse_fasta(text: str) -> tuple[str, str]:

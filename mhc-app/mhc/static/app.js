@@ -141,9 +141,28 @@ async function api(path, opts = {}) {
   }
   if (!res.ok || data.ok === false) {
     const msg = data.error || `请求失败 (HTTP ${res.status})`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.detail = data.detail || '';
+    throw err;
   }
   return data;
+}
+
+/** 对网关类瞬时错误（502/503/504）重试一次 —— 公网资源偶发抖动。 */
+async function apiRetry(path, opts = {}, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await api(path, opts);
+    } catch (e) {
+      lastErr = e;
+      const transient = !e.status || e.status === 502 || e.status === 503 || e.status === 504;
+      if (!transient || i === tries - 1) throw e;
+      await new Promise((r) => setTimeout(r, 700 * (i + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 const fmtNum = (v, digits = 3) => {
@@ -1531,7 +1550,7 @@ const resState = {
 async function loadResourceCatalog(force = false) {
   if (resState.catalog && !force) { renderResourceCatalog(); return; }
   try {
-    const d = await api('/api/resources');
+    const d = await apiRetry('/api/resources');
     resState.catalog = d;
     renderResourceCatalog();
   } catch (e) {
@@ -1643,7 +1662,7 @@ async function searchGdc() {
   meta.textContent = '查询中…';
   $('btnGdcSearch').disabled = true;
   try {
-    const d = await api('/api/gdc/mutations', {
+    const d = await apiRetry('/api/gdc/mutations', {
       method: 'POST',
       body: JSON.stringify({ project, gene, chromosome: chrom, mutation_type: mutType, size: 500 }),
     });
@@ -1669,7 +1688,10 @@ async function searchGdc() {
       if (hint && nMiss) hint.textContent = `${nMiss} 个错义突变可导入 · 自动取 UniProt 序列并跑三步串联`;
     }
   } catch (e) {
-    meta.textContent = '查询失败：' + e.message;
+    const hint = e.status === 502 || e.status === 503 || e.status === 504
+      ? '（GDC 服务暂时不可达，已自动重试；稍后再点一次）'
+      : '';
+    meta.textContent = '查询失败：' + e.message + hint;
     toast(e.message, 'err');
   } finally {
     $('btnGdcSearch').disabled = false;
@@ -1736,7 +1758,7 @@ async function runIedb() {
   $('iedbRunText').textContent = '预测中…';
 
   try {
-    const d = await api('/api/iedb/predict', {
+    const d = await apiRetry('/api/iedb/predict', {
       method: 'POST',
       body: JSON.stringify({ mhc_class: cls, method, input, alleles, length }),
     });
@@ -1881,7 +1903,7 @@ async function neoPreview() {
   $('btnNeoPreview').disabled = true;
 
   try {
-    const d = await api('/api/neoantigen/preview', {
+    const d = await apiRetry('/api/neoantigen/preview', {
       method: 'POST',
       body: JSON.stringify({
         mutations: ok.map((x) => ({ gene: x.gene, pos: x.pos, ref: x.ref, alt: x.alt })),

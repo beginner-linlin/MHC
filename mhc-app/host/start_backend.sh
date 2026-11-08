@@ -28,14 +28,52 @@ port_busy() {
   ss -ltn 2>/dev/null | grep -q ":$PORT "
 }
 
+# 找出正在监听 $PORT 的进程 pid（可能是丢了 pid 文件的孤儿 serve.py）
+port_pid() {
+  ss -ltnp 2>/dev/null | grep ":$PORT " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+}
+
+# 判断某个 pid 是不是「我们自己的 serve.py」
+is_our_serve() {
+  local p=${1:-}
+  [ -n "$p" ] || return 1
+  grep -qa "serve.py" "/proc/$p/cmdline" 2>/dev/null || return 1
+  grep -qa "$APP_DIR" "/proc/$p/cmdline" 2>/dev/null || return 1
+  return 0
+}
+
+# 杀掉占着端口却丢了 pid 文件的孤儿进程（自愈）
+# 只在确认是本应用进程时才动手，避免误杀别人的服务
+reap_orphan() {
+  local p
+  p=$(port_pid)
+  if is_our_serve "$p"; then
+    echo "发现残留后端进程 (pid $p) 占用端口 $PORT，正在清理…"
+    kill "$p" 2>/dev/null
+    for _ in $(seq 1 30); do
+      kill -0 "$p" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+    for _ in $(seq 1 20); do
+      port_busy || return 0
+      sleep 0.1
+    done
+    return 0
+  fi
+  return 1
+}
+
 do_start() {
   if is_running; then
     echo "后端已在运行 (pid $(cat "$PID_FILE"))"
     return 0
   fi
   if port_busy; then
-    echo "端口 $PORT 已被其他进程占用，请先释放"
-    return 1
+    if ! reap_orphan; then
+      echo "端口 $PORT 已被其他进程占用（非本应用），请先释放"
+      return 1
+    fi
   fi
   cd "$APP_DIR" || return 1
   export MHC_APP_ROOT="$APP_DIR"
@@ -65,23 +103,39 @@ do_start() {
 }
 
 do_stop() {
-  if ! is_running; then
-    echo "后端未运行"
-    rm -f "$PID_FILE"
-    return 0
-  fi
-  local pid
-  pid=$(cat "$PID_FILE")
-  kill "$pid" 2>/dev/null
-  for _ in $(seq 1 30); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -9 "$pid" 2>/dev/null
+  local stopped=0
+  if is_running; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    kill "$pid" 2>/dev/null
+    for _ in $(seq 1 30); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    stopped=1
   fi
   rm -f "$PID_FILE"
-  echo "后端已停止"
+  # pid 文件丢了但进程还在（孤儿）→ 一并清理
+  if port_busy; then
+    local p
+    p=$(port_pid)
+    if is_our_serve "$p"; then
+      kill "$p" 2>/dev/null
+      for _ in $(seq 1 30); do
+        kill -0 "$p" 2>/dev/null || break
+        sleep 0.1
+      done
+      kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+      stopped=1
+    fi
+  fi
+  if [ "$stopped" = "1" ]; then
+    echo "后端已停止"
+  else
+    echo "后端未运行"
+  fi
+  return 0
 }
 
 do_status() {

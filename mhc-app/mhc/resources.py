@@ -21,6 +21,7 @@ B. 只能外链的（给出卡片与说明）：
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -95,23 +96,44 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
         raise ResourceError("远端返回的不是合法 JSON", detail=text[:500]) from exc
 
 
+RETRIES = 3
+RETRY_BACKOFF = 0.8  # 秒，逐次翻倍
+
+
 def _read(req: urllib.request.Request, timeout: int) -> str:
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    """发请求并读文本。
+
+    公网资源（GDC / IEDB / UniProt）偶发瞬时失败——连接被重置、5xx、读超时。
+    这些都不该直接暴露成 502 让用户重试，因此对「瞬时错误」做最多 RETRIES 次
+    指数退避重试；4xx（参数错、等位基因不存在）不重试，直接抛。
+    """
+    last: Exception | None = None
+    for attempt in range(RETRIES):
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
-        except Exception:  # noqa: BLE001
-            pass
-        raise ResourceError(f"远端返回 HTTP {exc.code}", detail=detail) from exc
-    except urllib.error.URLError as exc:
-        raise ResourceError("无法连接远端服务（网络不通或 DNS 失败）", detail=str(exc.reason)) from exc
-    except TimeoutError as exc:
-        raise ResourceError("远端服务响应超时", detail=f"{timeout} 秒") from exc
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+                return raw.decode(charset, errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:800]
+            except Exception:  # noqa: BLE001
+                pass
+            err = ResourceError(f"远端返回 HTTP {exc.code}", detail=detail)
+            # 429 / 5xx 视为瞬时，可重试；其余 4xx 是请求本身有问题
+            if exc.code != 429 and exc.code < 500:
+                raise err from exc
+            last = err
+        except urllib.error.URLError as exc:
+            last = ResourceError("无法连接远端服务（网络不通或 DNS 失败）", detail=str(exc.reason))
+        except (TimeoutError, OSError) as exc:
+            # socket.timeout 在 3.10+ 是 TimeoutError 别名；连接重置是 OSError
+            last = ResourceError("远端服务响应超时或连接中断", detail=f"{type(exc).__name__}: {exc}")
+        if attempt + 1 < RETRIES:
+            time.sleep(RETRY_BACKOFF * (2**attempt))
+    assert last is not None
+    raise last
 
 
 # ---------------------------------------------------------------- GDC 突变检索

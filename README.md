@@ -161,6 +161,7 @@ NetMHCpan 4.2e · NetChop 3.1d · NetMHCstabpan 1.0（/opt/bio/）
 - netMHCstabpan 的亲和力列（`-ia`）通过兼容层提供：原版要求 NetMHCpan-2.8（已停止分发），本应用用 4.2 模拟等价输出，稳定性列与官方期望输出逐字节一致
 - Flask 开发服务器承载（局域网小团队场景足够，非公网生产级）
 - 新抗原模式依赖 UniProt / GDC 公网可达；离线时 UniProt 命中本地缓存仍可用，未缓存基因会失败
+- 公网资源（GDC / UniProt / IEDB）偶发瞬时失败已做自动重试：后端对连接重置、超时、429/5xx 重试 3 次（指数退避），前端对 502/503/504 再补一次重试，界面提示「已自动重试」
 - GNAS 在 UniProt reviewed 里只有 `P84996 (ALEX_HUMAN)` 一个代表条目，位置编号与 GDC 的 GNAS 突变可能错位，程序会记 warning 并强制按给定替换应用
 
 ## 测试
