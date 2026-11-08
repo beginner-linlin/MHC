@@ -1310,9 +1310,15 @@ async function handleAnyFile(f) {
           throw new Error('gzip 解压失败：' + e.message);
         }
       }
+      // 分块转二进制字符串：String.fromCharCode 一次最多吃 ~65535 个参数，
+      // 且 chunkify 返回「块的数组」，必须逐块拼接而不是整体展开
+      let bin = '';
+      for (const chunk of chunkify(bytes, 32768)) {
+        bin += String.fromCharCode.apply(null, chunk);
+      }
       payload = {
         filename: f.name,
-        content_b64: btoa(String.fromCharCode(...chunkify(bytes, 32768))),
+        content_b64: btoa(bin),
       };
     } else {
       payload = { filename: f.name, text: await f.text() };
