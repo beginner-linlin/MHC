@@ -381,6 +381,101 @@ SMAD4 p.Arg361Cys
 
 ---
 
+## 三·八、对外接入（API 密钥）
+
+给**外部程序或外部 AI 助手**（Claude Desktop、Cursor、自己写的脚本）开一个入口：在工作台里生成一枚密钥，对方拿着密钥就能调用工作台的全部预测能力，不用打开网页。
+
+入口：左侧「数据库与工具」→ 顶部第 4 个页签 **对外接入**。
+
+### 生成密钥
+
+1. 在「名称」里写个备注（如 `我的脚本`、`Claude Desktop`），点 **生成密钥**
+2. 页面上会显示一次完整密钥，形如 `mhc_3d668ff17d8e4a1c9b2f5e7d8c0a1b2c`（`mhc_` 前缀 + 32 位十六进制，共 36 字符）
+3. **这串只在生成时显示一次**，关掉就看不到了；列表里只保留前 12 位前缀（`mhc_3d668ff1…`）用于辨认
+4. 忘了就撤销重新生成——库里只存 SHA-256 摘要，谁也取不回明文
+
+按钮说明：**撤销**让密钥立刻失效但保留记录（可查调用次数）；**删除**彻底移除记录。
+
+### 调用方式
+
+两种鉴权头都支持，任选一种：
+
+```bash
+# 方式一：Authorization: Bearer
+curl -H "Authorization: Bearer mhc_你的密钥" http://127.0.0.1:8080/api/v1/ping
+
+# 方式二：X-API-Key
+curl -H "X-API-Key: mhc_你的密钥" http://127.0.0.1:8080/api/v1/ping
+```
+
+局域网内的其他机器把 `127.0.0.1` 换成主机地址（如 `10.108.27.193`）即可。
+
+### 可用端点
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/v1/ping` | 验密钥是否有效，返回 `{ok, name, calls}` |
+| GET | `/api/v1/tools` | 列出全部 9 个工具（含 `openai_tools` 格式，可直接喂给 LLM 的 function calling） |
+| POST | `/api/v1/tools/<name>` | 按名字调任意工具，body 可直接给参数或包一层 `{"args": {...}}` |
+| POST | `/api/v1/predict/binding` | NetMHCpan 结合预测 |
+| POST | `/api/v1/predict/cleavage` | NetChop 酶切预测 |
+| POST | `/api/v1/predict/stability` | NetMHCstabpan 稳定性预测 |
+| POST | `/api/v1/pipeline` | 三步串联流水线 |
+| POST | `/api/v1/mutant` | 野生型/突变型比对筛选 |
+
+### 示例
+
+**结合预测**：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/predict/binding \
+  -H "Authorization: Bearer mhc_你的密钥" \
+  -H "Content-Type: application/json" \
+  -d '{"peptides": ["SLYNTVATL", "GILGFVFTL"], "alleles": ["HLA-A02:01"], "with_ba": true}'
+```
+
+返回：
+
+```json
+{
+  "ok": true, "job_id": "a6d4b577d8044b00", "count": 2,
+  "rows": [
+    {"pos": 0, "mhc": "HLA-A*02:01", "peptide": "SLYNTVATL", "rank_el": 0.083,
+     "score_el": 0.853, "aff_nm": 75.81, "bind": "<= SB"}
+  ],
+  "summary": {"count": 2, "strong_binders": 2, "weak_binders": 0}
+}
+```
+
+**按工具名调用**（参数与网页里一致）：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/tools/predict_stability \
+  -H "X-API-Key: mhc_你的密钥" -H "Content-Type: application/json" \
+  -d '{"args": {"peptides": ["MLLSVPLLL"], "alleles": ["HLA-A02:01"]}}'
+```
+
+**让外部 AI 助手接管**：把 `/api/v1/tools` 返回的 `openai_tools` 数组直接作为 function 定义塞进你的 agent，再把工具调用转发到 `POST /api/v1/tools/<name>`——它做的事与内置智能助手完全一致（同一份注册表）。
+
+### 与内置智能助手的区别
+
+| | 内置智能助手 | 对外接入 |
+|---|---|---|
+| 谁在决策 | 工作台内的大模型（需配 API Key） | 你指定的外部程序/模型 |
+| 密钥用途 | 调用模型服务商 | 调用工作台本身 |
+| 工具清单 | 9 个（同一份注册表） | 9 个（同一份注册表） |
+| 适合场景 | 想直接在网页里用自然语言 | 已有自己的 agent、批量脚本、CI |
+
+### 注意
+
+- 密钥权限等同于「使用工作台」，**不要提交到公开仓库**
+- 鉴权只作用于 `/api/v1/*`，网页自身的 `/api/jobs/*` 不受影响，所以不会把自己锁在外面
+- 每次调用会累加 `calls` 计数并更新 `last_used_at`，可在列表里查看用量
+- 密钥存在 `data/api_tokens.sqlite3`，备份数据目录时一并备份
+
+---
+
+
 ## 四、结果怎么看
 
 ### 结合预测（9 列 + 结合标签）
