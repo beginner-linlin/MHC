@@ -417,9 +417,9 @@ curl -H "X-API-Key: mhc_你的密钥" http://127.0.0.1:8080/api/v1/ping
 | GET | `/api/v1/ping` | 验密钥是否有效，返回 `{ok, name, calls}` |
 | GET | `/api/v1/tools` | 列出全部 9 个工具（含 `openai_tools` 格式，可直接喂给 LLM 的 function calling） |
 | POST | `/api/v1/tools/<name>` | 按名字调任意工具，body 可直接给参数或包一层 `{"args": {...}}` |
-| POST | `/api/v1/predict/binding` | NetMHCpan 结合预测 |
-| POST | `/api/v1/predict/cleavage` | NetChop 酶切预测 |
-| POST | `/api/v1/predict/stability` | NetMHCstabpan 稳定性预测 |
+| POST | `/api/v1/predict/binding` | NetMHCpan 结合预测（`peptides`/`fasta` + `alleles` + 可选 `threshold`） |
+| POST | `/api/v1/predict/cleavage` | NetChop 酶切预测（`fasta` + 可选 `model`/`threshold`） |
+| POST | `/api/v1/predict/stability` | NetMHCstabpan 稳定性预测（`peptides` + `alleles`） |
 | POST | `/api/v1/pipeline` | 三步串联流水线 |
 | POST | `/api/v1/mutant` | 野生型/突变型比对筛选 |
 
@@ -431,21 +431,31 @@ curl -H "X-API-Key: mhc_你的密钥" http://127.0.0.1:8080/api/v1/ping
 curl -X POST http://127.0.0.1:8080/api/v1/predict/binding \
   -H "Authorization: Bearer mhc_你的密钥" \
   -H "Content-Type: application/json" \
-  -d '{"peptides": ["SLYNTVATL", "GILGFVFTL"], "alleles": ["HLA-A02:01"], "with_ba": true}'
+  -d '{"peptides": ["SLYNTVATL", "GILGFVFTL"], "alleles": ["HLA-A02:01"]}'
 ```
 
 返回：
 
 ```json
 {
-  "ok": true, "job_id": "a6d4b577d8044b00", "count": 2,
-  "rows": [
-    {"pos": 0, "mhc": "HLA-A*02:01", "peptide": "SLYNTVATL", "rank_el": 0.083,
-     "score_el": 0.853, "aff_nm": 75.81, "bind": "<= SB"}
-  ],
-  "summary": {"count": 2, "strong_binders": 2, "weak_binders": 0}
+  "ok": true, "tool": "predict_binding", "seconds": 0.258,
+  "result": {
+    "job_id": "3a91af5400484692", "count": 2, "steps": [],
+    "summary": {
+      "count": 2, "strong_binders": 2, "weak_binders": 0,
+      "top_rows": [
+        {"pos": 1, "peptide": "SLYNTVATL", "mhc": "HLA-A*02:01",
+         "rank_el": 0.083, "aff_nm": 75.81, "bind": "<= SB"},
+        {"pos": 2, "peptide": "GILGFVFTL", "mhc": "HLA-A*02:01",
+         "rank_el": 0.197, "aff_nm": 10.68, "bind": "<= SB"}
+      ],
+      "note": "只展示前 15 行，完整结果可用 job_id 在工作台历史里导出"
+    }
+  }
 }
 ```
+
+`result.summary.top_rows` 只给前 15 行；要全量数据，用返回的 `job_id` 到「历史记录」里导出 CSV/xlsx。
 
 **按工具名调用**（参数与网页里一致）：
 
