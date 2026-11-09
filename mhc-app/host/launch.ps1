@@ -17,6 +17,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# wsl.exe / bash 的输出是 UTF-8，PowerShell 5.1 默认按 GBK 解码会让中文变乱码，
+# 进而让下面的中文匹配（如 '已启动'）恒为假、误报「后端启动失败」。
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+} catch { }
 $HostDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppDir  = Split-Path -Parent $HostDir
 $RunDir  = Join-Path $AppDir 'run'
@@ -98,8 +105,10 @@ if ($status -match 'RUNNING') {
 } else {
     Write-Step '正在拉起后端进程…'
     $out = (& wsl.exe -d $Distro -u root -- bash $backendScript start 2>&1) -join "`n"
-    if ($LASTEXITCODE -eq 0 -and $out -match '已启动') {
-        Write-Ok ($out.Trim() -split "`n" | Select-Object -Last 1)
+    # 判定只看退出码：start_backend.sh 成功时返回 0；中文字符串匹配会被编码问题破坏
+    if ($LASTEXITCODE -eq 0) {
+        $lastLine = ($out.Trim() -split "`n" | Select-Object -Last 1)
+        if ($lastLine) { Write-Ok $lastLine.Trim() } else { Write-Ok '后端进程已拉起' }
     } else {
         Write-Bad '后端启动失败，输出如下：'
         Write-Host $out -ForegroundColor DarkYellow

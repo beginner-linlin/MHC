@@ -1,4 +1,5 @@
 @echo off
+chcp 936 >nul
 title MHC Workbench - Í£Ö¹·þÎñ
 cd /d "%~dp0"
 
