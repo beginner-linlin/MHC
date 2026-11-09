@@ -22,7 +22,6 @@ from typing import Any
 from flask import Flask, Response, jsonify, request, send_file
 
 from . import __version__, exporters
-from . import neoantigen as neoantigen_mod
 from . import resources as resources_mod
 from .fileformats import build_pairs, parse_any
 from .jobs import JobStore, Progress, STATUS_DONE, STATUS_FAILED, STATUS_RUNNING
@@ -258,100 +257,6 @@ def iedb_predict() -> Response:
             "count": len(all_rows),
             "rows": all_rows,
             "errors": errors,
-        }
-    )
-
-
-# ---------------------------------------------------------------- UniProt 取序列
-
-
-@app.get("/api/uniprot/protein")
-def uniprot_protein() -> Response:
-    """按基因名取人类规范蛋白序列（带缓存）。"""
-    gene = (request.args.get("gene") or "").strip()
-    if not gene:
-        return api_error("请提供基因名，例如 KRAS")
-    refresh = str(request.args.get("refresh") or "").lower() in ("1", "true", "yes")
-    try:
-        info = neoantigen_mod.lookup(gene)
-        if refresh:
-            info = neoantigen_mod.lookup(gene)
-        return jsonify({"ok": True, "protein": info})
-    except resources_mod.ResourceError as exc:
-        return api_error(exc.message, exc.status, detail=exc.detail)
-    except Exception as exc:  # noqa: BLE001
-        return api_error(f"UniProt 查询失败：{exc}", 502)
-
-
-@app.post("/api/neoantigen/preview")
-def neoantigen_preview() -> Response:
-    """突变 → 蛋白序列 → 候选肽（不跑三工具，快速预览）。"""
-    p = body()
-    mutations = p.get("mutations") or []
-    lengths = [int(x) for x in (p.get("peptide_lengths") or [9]) if 8 <= int(x) <= 14] or [9]
-    if not mutations:
-        return api_error("请至少提供一个突变，例如 KRAS G12D")
-
-    parsed, errors = [], []
-    for raw in mutations:
-        mu = neoantigen_mod.normalize_mutation(raw)
-        if mu is None:
-            errors.append(f"无法解析「{raw}」")
-            continue
-        parsed.append(mu)
-    if not parsed:
-        return api_error("没有解析出有效突变。" + "；".join(errors))
-
-    proteins, notes = [], list(errors)
-    seen: dict[str, dict] = {}
-    for mu in parsed:
-        if mu["kind"] != "missense":
-            notes.append(f"{mu['text']} 不是错义突变，不会产生新表位肽。")
-            continue
-        gene = mu["gene"]
-        try:
-            if gene not in seen:
-                seen[gene] = neoantigen_mod.fetch_protein(gene)
-        except resources_mod.ResourceError as exc:
-            notes.append(f"{gene} 取序列失败：{exc.message}")
-            continue
-        prot = seen[gene]
-        seq = prot["seq"]
-        if not (1 <= mu["pos"] <= len(seq)):
-            notes.append(f"{mu['text']} 位置 {mu['pos']} 超出 {gene} 长度 {len(seq)}。")
-            continue
-        actual = seq[mu["pos"] - 1]
-        if actual != mu["ref"]:
-            notes.append(
-                f"{mu['text']} 与 UniProt {prot['accession']} 第 {mu['pos']} 位（{actual}）"
-                "不一致，将按给定替换强制应用。"
-            )
-        alt_seq = neoantigen_mod._apply_substitution(seq, mu["pos"], mu["ref"], mu["alt"])
-        peps = mutant_peptides(seq, alt_seq, lengths)
-        proteins.append(
-            {
-                "gene": gene,
-                "accession": prot["accession"],
-                "entry_name": prot["entry_name"],
-                "description": prot["description"],
-                "length": len(seq),
-                "mutation": mu,
-                "seq": seq,
-                "alt_seq": alt_seq,
-                "candidates": peps,
-                "candidate_count": len(peps),
-                "url": prot.get("url", ""),
-            }
-        )
-
-    return jsonify(
-        {
-            "ok": True,
-            "proteins": proteins,
-            "mutations": parsed,
-            "lengths": lengths,
-            "total_candidates": sum(x["candidate_count"] for x in proteins),
-            "notes": notes,
         }
     )
 
@@ -614,8 +519,7 @@ def parse_file() -> Response:
 
 def _title(kind: str, payload: dict) -> str:
     label = {"pan": "结合预测", "chop": "酶切预测", "stab": "稳定性预测",
-             "pipeline": "串联流水线", "mutant": "突变肽筛选",
-             "neoantigen": "新抗原筛选"}.get(kind, kind)
+             "pipeline": "串联流水线", "mutant": "突变肽筛选"}.get(kind, kind)
     n = payload.get("_input_count", 0)
     unit = payload.get("_input_unit") or "条序列"
     al = payload.get("alleles") or []
@@ -1042,50 +946,6 @@ def submit_mutant() -> Response:
     return _submit("mutant", p, task, count=len(peptides), unit="条候选肽")
 
 
-@app.post("/api/jobs/neoantigen")
-def submit_neoantigen() -> Response:
-    """新抗原一键流水线：突变 → UniProt 序列 → 酶切 → 结合 → 稳定性。"""
-    p = body()
-    alleles = resolve_alleles(p.get("alleles") or [])
-    if not alleles:
-        return api_error("请至少选择一个 HLA 等位基因")
-    raw_mutations = p.get("mutations") or []
-    if isinstance(raw_mutations, str):
-        raw_mutations = [x for x in raw_mutations.replace(";", "\n").splitlines() if x.strip()]
-    if not raw_mutations:
-        return api_error("请至少提供一个突变，例如 KRAS G12D")
-
-    parsed = []
-    for raw in raw_mutations:
-        mu = neoantigen_mod.normalize_mutation(raw)
-        if mu is None:
-            return api_error(f"无法解析突变「{raw}」。支持的写法：KRAS G12D、KRAS p.G12D、KRAS p.Gly12Asp")
-        parsed.append(mu)
-
-    lengths = [int(x) for x in (p.get("peptide_lengths") or [9])]
-    lengths = [x for x in lengths if 8 <= x <= 14] or [9]
-
-    params = {
-        "cleavage_threshold": float(p.get("cleavage_threshold", 0.5)),
-        "cleavage_model": int(p.get("cleavage_model", 0)),
-        "peptide_lengths": lengths,
-        "use_cleavage_filter": bool(p.get("use_cleavage_filter", False)),
-        "cleavage_tolerance": int(p.get("cleavage_tolerance", 1) or 0),
-        "max_rank_el": float(p.get("max_rank_el", 0) or 0),
-        "min_thalf": float(p.get("min_thalf", 0.0) or 0.0),
-        "include_wt": bool(p.get("include_wt", True)),
-        "mutant_specific_only": bool(p.get("mutant_specific_only", False)),
-    }
-
-    def task(progress: Progress) -> dict:
-        c = caller()
-        return neoantigen_mod.run_neoantigen(
-            c, mutations=parsed, alleles=alleles, params=params, progress=progress
-        )
-
-    return _submit("neoantigen", p, task, count=len(parsed), unit="个突变")
-
-
 def _subs(ref: str, alt: str):
     return [(i + 1, a, b) for i, (a, b) in enumerate(zip(ref, alt)) if a != b]
 
@@ -1275,6 +1135,23 @@ def agent_save_config():
             cur["model"] = preset["model"]
     agent.save_agent_config({k: cur[k] for k in allowed if k in cur})
     return jsonify({"ok": True, "config": agent.get_agent_config_public()})
+
+
+@app.post("/api/agent/test")
+def agent_test_connection():
+    """连通性自测：POST {base_url?, api_key?, model?}；留空的字段用已保存配置补齐。"""
+    from . import agent
+    payload = body()
+    saved = agent._load_agent_config()
+    cfg = {
+        "base_url": (payload.get("base_url") or saved.get("base_url") or "").strip(),
+        "api_key": (payload.get("api_key") or saved.get("api_key") or "").strip(),
+        "model": (payload.get("model") or saved.get("model") or "").strip(),
+    }
+    if not cfg["base_url"] or not cfg["model"]:
+        return jsonify({"ok": False, "status": None, "message": "配置不完整",
+                        "suggestion": "请先填写 base_url 与 model（或先保存过配置）后再测试。", "key_len": len(cfg["api_key"])})
+    return jsonify(agent.test_llm_connection(cfg))
 
 
 @app.get("/api/agent/presets")

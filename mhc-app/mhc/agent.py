@@ -54,14 +54,14 @@ _LLM_RETRYABLE_CODES = {429, 500, 502, 503, 504}
 _LLM_RETRY_DELAYS = (1.0, 3.0)   # 指数退避：第 1 次重试前 1s，第 2 次前 3s
 
 # 平台控制台域名 → 正确的 OpenAI 兼容 API 端点示例（用户最常填错的地址）
+# 注意：只收录「控制台域名 ≠ API 域名」的平台；智谱 open.bigmodel.cn 的控制台与
+# API 同 host，故不在此列（否则会把正确端点误判为网页地址）。
 _CONSOLE_HOST_HINTS = {
     "platform.deepseek.com": "https://api.deepseek.com",
     "platform.openai.com": "https://api.openai.com/v1",
     "console.moonshot.cn": "https://api.moonshot.cn/v1",
-    "bigmodel.cn": "https://open.bigmodel.cn/api/paas/v4",
     "bailian.console.aliyun.com": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "cloud.siliconflow.cn": "https://api.siliconflow.cn/v1",
-    "siliconflow.cn": "https://api.siliconflow.cn/v1",
 }
 
 # 免费/低成本模型预设（base_url + 推荐 model）。用户只需填 API key。
@@ -113,11 +113,35 @@ def _extract_title(html: str) -> str:
     return re.sub(r"\s+", " ", m.group(1)).strip()[:60]
 
 
+def _known_api_hosts() -> frozenset:
+    """所有已收录的正确 API host（提示表 example + 预设 base_url），用于豁免误判。"""
+    hosts = set()
+    for example in _CONSOLE_HOST_HINTS.values():
+        try:
+            hosts.add(urllib.parse.urlparse(example).netloc.lower())
+        except Exception:
+            pass
+    for p in MODEL_PRESETS.values():
+        try:
+            hosts.add(urllib.parse.urlparse(p["base_url"]).netloc.lower())
+        except Exception:
+            pass
+    return frozenset(hosts)
+
+
+_KNOWN_API_HOSTS = _known_api_hosts()
+
+
 def _endpoint_hint(base_url: str) -> str:
-    """base_url 疑似填成平台网页地址时给出正确端点示例。"""
+    """base_url 疑似填成平台网页地址时给出正确端点示例。
+
+    已知正确 API host（含智谱 open.bigmodel.cn）直接豁免，绝不误判。
+    """
     try:
         host = urllib.parse.urlparse(base_url).netloc.lower()
     except Exception:
+        return ""
+    if host in _KNOWN_API_HOSTS:
         return ""
     for dom, example in _CONSOLE_HOST_HINTS.items():
         if dom in host:
@@ -129,8 +153,131 @@ def _cap(msg: str, limit: int = 200) -> str:
     return msg if len(msg) <= limit else msg[: limit - 1] + "…"
 
 
-def _humanize_llm_error(code: int, body: str, base_url: str = "") -> str:
-    """把 LLM 上游错误响应转成一句人话；绝不透传整页 HTML / 长 CSS。"""
+def _provider_of(base_url: str) -> str:
+    """按 base_url host 识别 LLM 平台：deepseek / zhipu（智谱）/ 其他返回 ""。"""
+    try:
+        host = urllib.parse.urlparse(base_url or "").netloc.lower()
+    except Exception:
+        return ""
+    if "deepseek" in host:
+        return "deepseek"
+    if "bigmodel.cn" in host or "zhipu" in host or "zhipuai" in host:
+        return "zhipu"
+    return ""
+
+
+def _extract_upstream_error(body: str) -> tuple[str, str]:
+    """从 JSON 错误响应提取 (message, error.code)。
+
+    兼容两种结构：OpenAI 式 {"error": {"message": ...}}（无 code）与
+    智谱式 {"error": {"code": "1002", "message": "..."}}。非 JSON 返回 ("", "")。
+    """
+    try:
+        data = json.loads(body)
+    except Exception:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    err = data.get("error")
+    code_val = ""
+    if isinstance(err, dict):
+        code_val = str(err.get("code") or "")
+        msg = err.get("message")
+        if isinstance(msg, dict):
+            msg = str(msg.get("message") or json.dumps(msg, ensure_ascii=False)[:120])
+        msg = str(msg or "") or str(err.get("type") or "")
+    elif isinstance(err, str):
+        msg = err
+    else:
+        msg = ""
+    msg = msg or str(data.get("message") or "")
+    return msg, code_val
+
+
+def _key_length_hint(api_key: str, provider: str = "") -> str:
+    """Key 长度可疑时的诊断提示（绝不回显 key 本身，只给长度）。"""
+    key = api_key or ""
+    if not key:
+        return ""
+    if provider == "zhipu":
+        if len(key) < 20:
+            return (f"注意：当前 Key 仅 {len(key)} 个字符，而正常智谱 Key 为 30+ 字符，"
+                    f"疑似复制不完整或已截断，请重新完整复制。")
+    elif provider == "deepseek":
+        if len(key) < 20:
+            return (f"注意：当前 Key 仅 {len(key)} 个字符，而正常 DeepSeek Key 以 sk- 开头、"
+                    f"长度 30+，疑似复制不完整，请重新完整复制。")
+    else:
+        if len(key) < 15:
+            return f"注意：当前 API Key 仅 {len(key)} 个字符，疑似复制不完整，请重新完整复制。"
+    return ""
+
+
+def _diagnose_llm_error(
+    code: int, msg: str, err_code: str, base_url: str = "", api_key: str = "",
+) -> tuple[str, str]:
+    """把常见 LLM 错误细分成人话 + 可执行建议（平台感知：DeepSeek / 智谱 / 通用）。
+
+    返回 (reason, suggestion)；无规则命中返回 ("", "")，由调用方走通用透传。
+    """
+    low = (msg or "").lower()
+    provider = _provider_of(base_url)
+    key_hint = _key_length_hint(api_key, provider)
+
+    # ---- 智谱：错误码在 error.code 里（字符串；实测 401 时 code="401"，文档另有 1002/1113/1211）----
+    if provider == "zhipu":
+        if code == 401 or err_code in ("1002", "401"):
+            if err_code in ("1002", "401") or "令牌" in msg or "token" in low or "无效" in msg:
+                sug = ("请到 open.bigmodel.cn 用户中心重新创建 API Key 并完整复制（智谱 Key 为 "
+                       "id.secret 格式、共 30+ 字符），粘贴到「智能助手 → 配置」后保存。")
+                return "API Key 无效、已过期或被删除", (sug + key_hint)
+            return ("认证失败", "请核对 Key 是否复制完整、是否属于 open.bigmodel.cn 平台。" + key_hint)
+        if err_code == "1113" or code == 402 or "余额" in msg or "额度" in msg:
+            return ("账户余额不足或免费额度已用完",
+                    "请到 open.bigmodel.cn 充值或领取免费额度后重试（glm-4-flash 免费但需实名认证）。")
+        if err_code == "1211" or (code in (400, 404) and ("model" in low or "模型" in msg)):
+            return ("模型名无效",
+                    "请到 open.bigmodel.cn 核对模型名（如 glm-4-flash、glm-4-plus），"
+                    "在「智能助手 → 配置」里更换后再试。")
+
+    # ---- DeepSeek：message 里带特征词 ----
+    if provider == "deepseek":
+        if code == 401:
+            if "no such user" in low:
+                return ("API Key 不存在或已被删除",
+                        "请到 platform.deepseek.com/api_keys 重新创建，并把新 Key 填到「智能助手 → 配置」。" + key_hint)
+            if "api key" in low or "api-key" in low:
+                return ("API Key 无效或已过期",
+                        "请重新创建并完整复制后再试（前后不应有多余空格或换行）。" + key_hint)
+            return ("认证失败",
+                    "请核对 Key 是否复制完整、是否属于当前 API 地址对应平台（platform.deepseek.com）。" + key_hint)
+        if code == 402:
+            return ("账户余额不足", "请到 platform.deepseek.com 充值后重试。")
+        if code == 400 and ("model" in low or "模型" in msg):
+            return ("模型名无效。DeepSeek 官方仅支持 deepseek-chat 与 deepseek-reasoner",
+                    "请在「智能助手 → 配置」里把模型改为 deepseek-chat 或 deepseek-reasoner。")
+
+    # ---- 通用兜底（其他平台 / 无法识别 host）----
+    if code == 401:
+        if "no such user" in low:
+            return ("API Key 不存在或已被删除",
+                    "请到对应平台重新创建 API Key，并把新 Key 填到「智能助手 → 配置」。")
+        if "api key" in low or "api-key" in low or "令牌" in msg or "token" in low:
+            return ("API Key 无效或已过期",
+                    "请重新创建并完整复制后再试；请核对 Key 是否属于当前 API 地址对应平台。" + key_hint)
+        return ("认证失败", "请核对 Key 是否复制完整、是否属于当前 API 地址对应的平台。" + key_hint)
+    if code == 402:
+        return ("账户余额不足", "请到对应平台控制台充值后重试。")
+    if code == 400 and ("model" in low or "模型" in msg):
+        return ("模型名无效", "请检查「智能助手 → 配置」里的模型拼写，或换成平台支持的模型。")
+    return "", ""
+
+
+def _humanize_llm_error(code: int, body: str, base_url: str = "", api_key: str = "") -> str:
+    """把 LLM 上游错误响应转成一句人话；绝不透传整页 HTML / 长 CSS。
+
+    401 / 402 / 400(模型名) 等常见错误按平台细分（DeepSeek / 智谱），给出可执行建议。
+    """
     body = (body or "").strip()
     title = _extract_title(body) if ("<" in body[:400]) else ""
     hint = _endpoint_hint(base_url)
@@ -142,21 +289,13 @@ def _humanize_llm_error(code: int, body: str, base_url: str = "") -> str:
         else:
             lead = f"模型服务异常（HTTP {code}{title_part}）：{hint}"
         return _cap(lead + tail)
-    # JSON 错误响应：透传其 message 字段
-    try:
-        data = json.loads(body)
-        msg = ""
-        if isinstance(data, dict):
-            err = data.get("error")
-            if isinstance(err, dict):
-                msg = str(err.get("message") or json.dumps(err, ensure_ascii=False)[:120])
-            elif isinstance(err, str):
-                msg = err
-            msg = msg or str(data.get("message") or "")
-        if msg:
-            return _cap(f"模型服务返回错误（HTTP {code}）：{msg}")
-    except Exception:
-        pass
+    # JSON 错误响应：先按平台细分（401/402/400-model 等），未命中再透传 message
+    msg, err_code = _extract_upstream_error(body)
+    reason, sug = _diagnose_llm_error(code, msg, err_code, base_url, api_key)
+    if reason:
+        return _cap(f"模型服务返回错误（HTTP {code}）：{reason}。{sug}")
+    if msg:
+        return _cap(f"模型服务返回错误（HTTP {code}）：{msg}")
     plain = re.sub(r"\s+", " ", body)[:120] if body else "(空响应)"
     return _cap(f"模型服务返回错误（HTTP {code}）：{plain}")
 
@@ -198,7 +337,7 @@ def chat_completion(cfg: LLMConfig, messages: list[dict], tools: list[dict]) -> 
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             resp_body = e.read().decode("utf-8", "replace")
-            last_err = _humanize_llm_error(e.code, resp_body, cfg.base_url)
+            last_err = _humanize_llm_error(e.code, resp_body, cfg.base_url, cfg.api_key)
             if e.code in _LLM_RETRYABLE_CODES and attempt < max_attempts - 1:
                 time.sleep(_parse_retry_after(e.headers.get("Retry-After"), _LLM_RETRY_DELAYS[attempt]))
                 continue
@@ -222,6 +361,98 @@ def chat_completion(cfg: LLMConfig, messages: list[dict], tools: list[dict]) -> 
                     "请检查「智能助手 → 配置」里的 API 地址是否为 OpenAI 兼容端点"
                 ))
     raise RuntimeError(last_err or "LLM 请求失败")
+
+
+def test_llm_connection(cfg: dict) -> dict:
+    """连通性自检：用最小 chat 请求（max_tokens=4，超时 10s）探测配置是否可用。
+
+    绝不抛异常，永远返回：
+      {"ok": bool, "status": int|None, "message": str, "suggestion": str, "key_len": int}
+    message / suggestion 全中文；日志与消息中绝不含完整 API Key。
+    """
+    def _get(d: dict, name: str) -> str:
+        for k, v in (d or {}).items():
+            if isinstance(k, str) and k.strip().lower() == name:
+                return str(v or "").strip()
+        return ""
+
+    base_url = _get(cfg, "base_url").rstrip("/")
+    api_key = _get(cfg, "api_key")
+    model = _get(cfg, "model")
+    key_len = len(api_key)
+
+    missing = [n for n, v in (("base_url", base_url), ("api_key", api_key), ("model", model)) if not v]
+    if missing:
+        return {
+            "ok": False, "status": None, "key_len": key_len,
+            "message": f"配置不完整：缺少 {', '.join(missing)}。",
+            "suggestion": "请到「智能助手 → 配置」填写完整的 API 地址、API Key 和模型名后保存。",
+        }
+
+    hint = _endpoint_hint(base_url)
+    if hint:
+        return {
+            "ok": False, "status": None, "key_len": key_len,
+            "message": hint,
+            "suggestion": "API 地址应填平台提供的 OpenAI 兼容端点（而非平台网页地址），"
+                          "可在「智能助手 → 配置」的预设下拉里直接选择对应平台。",
+        }
+
+    url = f"{base_url}/chat/completions"
+    payload = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4}
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = getattr(resp, "status", None) or getattr(resp, "code", None)
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        resp_body = e.read().decode("utf-8", "replace")
+        msg, err_code = _extract_upstream_error(resp_body)
+        reason, sug = _diagnose_llm_error(e.code, msg, err_code, base_url, api_key)
+        if reason:
+            return {"ok": False, "status": e.code, "key_len": key_len, "message": reason, "suggestion": sug}
+        shown = msg or "平台未返回详细原因"
+        return {
+            "ok": False, "status": e.code, "key_len": key_len,
+            "message": _cap(f"模型服务返回错误（HTTP {e.code}）：{shown}"),
+            "suggestion": "请检查「智能助手 → 配置」里的 Key / 模型 / API 地址，或稍后重试。",
+        }
+    except Exception as e:
+        return {
+            "ok": False, "status": None, "key_len": key_len,
+            "message": _cap(f"连接失败：{e}"),
+            "suggestion": "请检查网络连接，以及「智能助手 → 配置」里的 API 地址是否为 OpenAI 兼容端点。",
+        }
+
+    # HTTP 200 但不是 JSON：多半打到网页 / 网关
+    try:
+        data = json.loads(raw)
+    except Exception:
+        title = _extract_title(raw)
+        detail = f"页面标题：{title}" if title else "可能请求到了网页或网关页面"
+        return {
+            "ok": False, "status": status, "key_len": key_len,
+            "message": f"模型服务返回了非 JSON 内容（{detail}）。",
+            "suggestion": "请核对 API 地址是否为平台的 OpenAI 兼容端点（如 https://api.deepseek.com、"
+                          "https://open.bigmodel.cn/api/paas/v4）。",
+        }
+    choices = (data or {}).get("choices") or []
+    if not isinstance(data, dict) or not choices:
+        return {
+            "ok": False, "status": status, "key_len": key_len,
+            "message": "服务响应格式异常（缺少 choices 字段）。",
+            "suggestion": "请确认 API 地址为 OpenAI 兼容的 /chat/completions 端点。",
+        }
+    return {
+        "ok": True, "status": status, "key_len": key_len,
+        "message": f"连接成功：模型 {model} 可正常调用。",
+        "suggestion": "配置可用，可直接保存使用。",
+    }
 
 # ---------------------------------------------------------------- 工具注册表
 

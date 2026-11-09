@@ -49,16 +49,6 @@ const MODES = {
     placeholder: '',
     acceptFasta: false,
   },
-  neoantigen: {
-    title: '新抗原一键筛选',
-    desc: '输入体细胞突变（如 KRAS G12D），自动从 UniProt 取野生型序列、构造突变蛋白、'
-      + '再串起酶切 → 结合 → 稳定性三步，直接给出可成疫苗候选的新抗原肽。',
-    needAllele: true,
-    inputLabel: '突变列表',
-    placeholder: '',
-    acceptFasta: false,
-    isNeo: true,
-  },
   resources: {
     title: '数据库与在线工具',
     desc: '设计书所需的 GDC/TCGA 突变检索、IEDB 云端预测，以及其余数据库与在线工具入口。',
@@ -141,28 +131,9 @@ async function api(path, opts = {}) {
   }
   if (!res.ok || data.ok === false) {
     const msg = data.error || `请求失败 (HTTP ${res.status})`;
-    const err = new Error(msg);
-    err.status = res.status;
-    err.detail = data.detail || '';
-    throw err;
+    throw new Error(msg);
   }
   return data;
-}
-
-/** 对网关类瞬时错误（502/503/504）重试一次 —— 公网资源偶发抖动。 */
-async function apiRetry(path, opts = {}, tries = 2) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try {
-      return await api(path, opts);
-    } catch (e) {
-      lastErr = e;
-      const transient = !e.status || e.status === 502 || e.status === 503 || e.status === 504;
-      if (!transient || i === tries - 1) throw e;
-      await new Promise((r) => setTimeout(r, 700 * (i + 1)));
-    }
-  }
-  throw lastErr;
 }
 
 const fmtNum = (v, digits = 3) => {
@@ -254,17 +225,8 @@ function setMode(mode) {
 
   // 突变模式：换掉主输入区
   const isMutant = mode === 'mutant';
-  const isNeo = mode === 'neoantigen';
   const refField = document.querySelector('.field');
-  if (isNeo) {
-    refField.style.display = 'none';
-    $('mutantBlock').hidden = true;
-    $('neoBlock').hidden = false;
-    const label = refField.querySelector('.field-head label');
-    if (label) label.textContent = '输入序列';
-    updateNeoStats();
-  } else if (isMutant && state.pendingMutations) {
-    $('neoBlock').hidden = true;
+  if (isMutant && state.pendingMutations) {
     // 文件驱动的突变筛选：主输入区当「参考蛋白 FASTA」用
     refField.style.display = '';
     $('mutantBlock').hidden = true;
@@ -272,14 +234,12 @@ function setMode(mode) {
     const label = refField.querySelector('.field-head label');
     if (label) label.textContent = '参考蛋白 FASTA';
   } else if (isMutant) {
-    $('neoBlock').hidden = true;
     // 传统双序列对比
     refField.style.display = 'none';
     $('mutantBlock').hidden = false;
     const label = refField.querySelector('.field-head label');
     if (label) label.textContent = '输入序列';
   } else {
-    $('neoBlock').hidden = true;
     refField.style.display = '';
     $('mutantBlock').hidden = true;
     const label = refField.querySelector('.field-head label');
@@ -299,7 +259,7 @@ function setMode(mode) {
     $('tabPeptide').style.opacity = '';
   }
 
-  if (!isMutant && !isNeo) {
+  if (!isMutant) {
     $('inputText').placeholder = cfg.placeholder;
   }
 
@@ -595,20 +555,6 @@ const PARAM_DEFS = {
     { key: 'max_rank_el', type: 'select', label: '结合筛选阈值', hint: '只保留 EL 排名优于该值的肽', def: '2',
       options: [['0.5', '强结合 (≤0.5%)'], ['2', '强+弱 (≤2%)'], ['5', '≤5%'], ['0', '不过滤']] },
   ],
-  neoantigen: [
-    { key: 'cleavage_threshold', type: 'select', label: '切割阈值', hint: '决定哪些位置算作切割位点', def: '0.5',
-      options: [['0.3', '0.3（宽松，位点多）'], ['0.5', '0.5（标准）'], ['0.7', '0.7（严格）']] },
-    { key: 'cleavage_model', type: 'select', label: '切割模型', hint: 'C 端 3.0 或 20S 3.0', def: '0',
-      options: [['0', 'C 端 3.0'], ['1', '20S 3.0']] },
-    { key: 'lengths', type: 'lengths', label: '肽长', hint: '生成的候选肽长度', def: [9] },
-    { key: 'use_cleavage_filter', type: 'switch', label: '只在切割位点取肽', hint: '关闭（默认）＝覆盖突变位点的全滑窗都算候选，切割位点仅作标注；打开＝只留 C 端靠近切割位点的肽，候选会少很多', def: false },
-    { key: 'cleavage_tolerance', type: 'number', label: '切割位点容差', hint: '打开上面开关时，C 端离切割位点允许差几个残基', def: 1, step: 1, min: 0 },
-    { key: 'max_rank_el', type: 'select', label: '结合筛选阈值', hint: '只保留 EL 排名优于该值的肽', def: '0',
-      options: [['0', '不过滤（全部排序）'], ['0.5', '强结合 (≤0.5%)'], ['2', '强+弱 (≤2%)'], ['5', '≤5%']] },
-    { key: 'min_thalf', type: 'number', label: '最小半衰期 (h)', hint: '0 表示不限制', def: 0, step: 0.5, min: 0 },
-    { key: 'include_wt', type: 'switch', label: '同时算野生型对照', hint: '给出突变肽相对野生型的 Δ排名', def: true },
-    { key: 'mutant_specific_only', type: 'switch', label: '只要突变特异肽', hint: '仅保留突变后明显变强、且野生型本身不结合的肽', def: false },
-  ],
 };
 
 function buildParams() {
@@ -694,16 +640,7 @@ async function runJob() {
   // 收集参数
   const payload = { alleles: state.alleles };
 
-  if (state.mode === 'neoantigen') {
-    const { ok, bad, total } = parseNeoLines();
-    if (!total) { toast('请先填写突变，例如 KRAS G12D', 'err'); $('neoMutations').focus(); return; }
-    if (bad.length) {
-      showAlert(bad.map((x) => `无法识别「${x}」，支持写法：KRAS G12D / KRAS p.G12D / KRAS p.Gly12Asp`), 'error');
-      toast('有突变格式无法识别', 'err');
-      return;
-    }
-    payload.mutations = ok.map((x) => ({ gene: x.gene, pos: x.pos, ref: x.ref, alt: x.alt }));
-  } else if (state.mode !== 'mutant') {
+  if (state.mode !== 'mutant') {
     const raw = $('inputText').value.trim();
     if (!raw) { toast('请先输入序列', 'err'); return; }
     payload.input = raw;
@@ -762,16 +699,6 @@ async function runJob() {
     payload.min_thalf = Number(p.min_thalf) || 0;
   } else if (state.mode === 'mutant') {
     payload.max_rank_el = Number(p.max_rank_el);
-  } else if (state.mode === 'neoantigen') {
-    payload.cleavage_threshold = Number(p.cleavage_threshold);
-    payload.cleavage_model = Number(p.cleavage_model);
-    payload.peptide_lengths = p.lengths || [9];
-    payload.use_cleavage_filter = !!p.use_cleavage_filter;
-    payload.cleavage_tolerance = Number(p.cleavage_tolerance) || 0;
-    payload.max_rank_el = Number(p.max_rank_el) || 0;
-    payload.min_thalf = Number(p.min_thalf) || 0;
-    payload.include_wt = !!p.include_wt;
-    payload.mutant_specific_only = !!p.mutant_specific_only;
   }
 
   setBusy(true);
@@ -779,8 +706,7 @@ async function runJob() {
 
   try {
     // 先预检（校验规则随模式不同：netchop 不受肽长限制，netMHCpan 要求 ≥8）
-    // 突变筛选与新抗原筛选走自己的校验（突变解析 + 蛋白序列），跳过通用预检
-    if (state.mode !== 'mutant' && state.mode !== 'neoantigen') {
+    if (state.mode !== 'mutant') {
       const v = await api('/api/validate/input', {
         method: 'POST',
         body: JSON.stringify({
@@ -986,23 +912,6 @@ const COLUMNS = {
     { key: 'thalf', label: '半衰期 h', cls: 'numeric', num: true },
     { key: 'rank_stab', label: '稳定性排名%', cls: 'numeric', render: rankBar },
   ],
-  neoantigen: [
-    { key: 'gene', label: '基因', cls: 'mono', w: 80 },
-    { key: 'mutation', label: '突变', cls: 'mono', w: 80 },
-    { key: 'peptide', label: '突变肽', cls: 'mono', strong: true },
-    { key: 'ref_peptide', label: '野生型肽', cls: 'mono' },
-    { key: 'mhc', label: 'HLA', cls: 'mono' },
-    { key: 'rank_el', label: 'EL 排名%', cls: 'numeric', render: rankBar },
-    { key: 'aff_nm', label: '亲和力 nM', cls: 'numeric', num: true },
-    { key: 'bind_pan', label: '结合', render: bindTag },
-    { key: 'wt_rank_el', label: '野生型排名%', cls: 'numeric', num: true },
-    { key: 'delta_rank', label: 'Δ排名', cls: 'numeric', num: true },
-    { key: 'cut_pos', label: '切割位点', cls: 'numeric', w: 80 },
-    { key: 'cut_score', label: '切割概率', cls: 'numeric', num: true },
-    { key: 'thalf', label: '半衰期 h', cls: 'numeric', num: true },
-    { key: 'rank_stab', label: '稳定性排名%', cls: 'numeric', render: rankBar },
-    { key: 'combined_rank', label: '综合排名%', cls: 'numeric', num: true },
-  ],
 };
 
 function renderResult(job) {
@@ -1020,12 +929,11 @@ function renderResult(job) {
     stab: '稳定性结果',
     pipeline: '流水线结果',
     mutant: '突变肽筛选结果',
-    neoantigen: '新抗原候选肽',
   };
   $('resultTitle').textContent = TITLES[kind] || '结果';
 
   // 步骤条
-  if ((kind === 'pipeline' || kind === 'neoantigen') && r.steps) {
+  if (kind === 'pipeline' && r.steps) {
     renderSteps(r.steps, true);
     $('stepsBox').hidden = false;
   } else {
@@ -1134,14 +1042,6 @@ function renderKpis(kind, r, job) {
     add('突变位点', muts.length, '', 'purple');
     add('候选突变肽', r.candidate_peptides || 0);
     add('结果行数', rows.length);
-    const sb = rows.filter((x) => String(x.bind_pan).includes('SB')).length;
-    add('强结合 SB', sb, '', 'green');
-  } else if (kind === 'neoantigen') {
-    const sm = summary || {};
-    add('突变数', sm.mutation_count || (r.mutations || []).length, '', 'purple');
-    add('候选肽', sm.candidate_peptides || 0, '', 'amber');
-    add('结合肽', sm.bound_peptides || 0, '', 'green');
-    add('最终结果', sm.result_rows || rows.length);
     const sb = rows.filter((x) => String(x.bind_pan).includes('SB')).length;
     add('强结合 SB', sb, '', 'green');
   }
@@ -1550,7 +1450,7 @@ const resState = {
 async function loadResourceCatalog(force = false) {
   if (resState.catalog && !force) { renderResourceCatalog(); return; }
   try {
-    const d = await apiRetry('/api/resources');
+    const d = await api('/api/resources');
     resState.catalog = d;
     renderResourceCatalog();
   } catch (e) {
@@ -1662,7 +1562,7 @@ async function searchGdc() {
   meta.textContent = '查询中…';
   $('btnGdcSearch').disabled = true;
   try {
-    const d = await apiRetry('/api/gdc/mutations', {
+    const d = await api('/api/gdc/mutations', {
       method: 'POST',
       body: JSON.stringify({ project, gene, chromosome: chrom, mutation_type: mutType, size: 500 }),
     });
@@ -1676,22 +1576,8 @@ async function searchGdc() {
     if (!resState.gdcRows.length) {
       meta.innerHTML += ' — 没有匹配的突变，换基因或去掉过滤条件再试';
     }
-    // 有可导入的错义突变时，显示「一键导入新抗原筛选」按钮
-    const act = $('gdcActions');
-    if (act) {
-      const nMiss = resState.gdcRows.filter((r) =>
-        /missense/i.test(String(r.consequence_type || '')) &&
-        /^(?:p\.)?[A-Z]\d+[A-Z*]$/.test(String(r.aa_change || '').trim())
-      ).length;
-      act.hidden = nMiss === 0;
-      const hint = act.querySelector('.res-actions-hint');
-      if (hint && nMiss) hint.textContent = `${nMiss} 个错义突变可导入 · 自动取 UniProt 序列并跑三步串联`;
-    }
   } catch (e) {
-    const hint = e.status === 502 || e.status === 503 || e.status === 504
-      ? '（GDC 服务暂时不可达，已自动重试；稍后再点一次）'
-      : '';
-    meta.textContent = '查询失败：' + e.message + hint;
+    meta.textContent = '查询失败：' + e.message;
     toast(e.message, 'err');
   } finally {
     $('btnGdcSearch').disabled = false;
@@ -1758,7 +1644,7 @@ async function runIedb() {
   $('iedbRunText').textContent = '预测中…';
 
   try {
-    const d = await apiRetry('/api/iedb/predict', {
+    const d = await api('/api/iedb/predict', {
       method: 'POST',
       body: JSON.stringify({ mhc_class: cls, method, input, alleles, length }),
     });
@@ -1819,8 +1705,6 @@ function bindResourceEvents() {
   });
   $('btnGdcSearch').onclick = searchGdc;
   $('gdcGene').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGdc(); });
-  const bg2 = $('btnGdcToNeo');
-  if (bg2) bg2.onclick = neoFromGdc;
   $('btnIedbRun').onclick = runIedb;
   $('btnIedbSample').onclick = () => {
     $('iedbInput').value = SAMPLES.pep;
@@ -1854,173 +1738,6 @@ function updateIedbStats() {
   if (!lines.length) { stat.textContent = '尚未输入'; return; }
   const lens = [...new Set(lines.map((s) => s.length))].sort((a, b) => a - b);
   stat.textContent = `${lines.length} 条肽 · 长度 ${lens.join('/')}`;
-}
-
-// ─────────────────── 新抗原一键筛选（突变 → UniProt → 三步串联）───────────────────
-
-const NEO_RE = /^([A-Za-z0-9][A-Za-z0-9\-\.]*)\s*[: ]\s*(?:p\.)?([A-Z])(\d+)([A-Z*])$/;
-
-function parseNeoLines() {
-  const raw = $('neoMutations').value || '';
-  const lines = raw.split(/[\n;；]+/).map((s) => s.trim()).filter(Boolean);
-  const ok = [];
-  const bad = [];
-  lines.forEach((ln) => {
-    const compact = ln.replace(/\s+/g, ' ');
-    const m = compact.match(NEO_RE) || compact.match(/^([A-Za-z0-9\-\.]+)\s+(?:p\.)?([A-Z])(\d+)([A-Z*])$/);
-    if (m) {
-      ok.push({ gene: m[1].toUpperCase(), pos: Number(m[3]), ref: m[2], alt: m[4], text: compact });
-    } else {
-      bad.push(ln);
-    }
-  });
-  return { ok, bad, total: lines.length };
-}
-
-function updateNeoStats() {
-  const stat = $('neoStats');
-  if (!stat) return;
-  const { ok, bad, total } = parseNeoLines();
-  if (!total) { stat.textContent = '尚未输入突变'; return; }
-  const genes = [...new Set(ok.map((x) => x.gene))];
-  let txt = `${ok.length} 个突变 · ${genes.length} 个基因`;
-  if (bad.length) txt += ` · ${bad.length} 行无法识别`;
-  stat.textContent = txt;
-}
-
-async function neoPreview() {
-  const { ok, bad, total } = parseNeoLines();
-  if (!total) { toast('请先填写突变，例如 KRAS G12D', 'err'); return; }
-  if (!ok.length) {
-    toast('没有可识别的突变', 'err');
-    showAlert(bad.map((x) => `无法识别「${x}」，支持写法：KRAS G12D / KRAS p.G12D / KRAS p.Gly12Asp`), 'error');
-    return;
-  }
-
-  const box = $('neoPreview');
-  box.hidden = false;
-  box.innerHTML = '<div class="neo-loading">正在从 UniProt 取序列并生成候选肽…</div>';
-  $('btnNeoPreview').disabled = true;
-
-  try {
-    const d = await apiRetry('/api/neoantigen/preview', {
-      method: 'POST',
-      body: JSON.stringify({
-        mutations: ok.map((x) => ({ gene: x.gene, pos: x.pos, ref: x.ref, alt: x.alt })),
-        peptide_lengths: (state.params.lengths || [9]),
-      }),
-    });
-
-    box.innerHTML = '';
-    (d.proteins || []).forEach((p) => {
-      const card = el('div', 'neo-card');
-      const head = el('div', 'neo-card-head');
-      head.appendChild(el('strong', '', `${p.gene} ${p.mutation.aa_change || ''}`));
-      head.appendChild(el('span', 'neo-acc', `${p.accession} · ${p.length} aa`));
-      card.appendChild(head);
-
-      const desc = el('div', 'neo-desc', p.description || p.entry_name || '');
-      card.appendChild(desc);
-
-      const mut = el('div', 'neo-mut');
-      mut.innerHTML = `<span class="mono">…${escapeHtml(p.seq.slice(Math.max(0, p.mutation.pos - 13), p.mutation.pos - 1))}`
-        + `<b class="neo-hl">${p.mutation.ref}</b>→<b class="neo-hl">${p.mutation.alt}</b>`
-        + `${escapeHtml(p.seq.slice(p.mutation.pos, p.mutation.pos + 12))}…</span>`
-        + `<em>第 ${p.mutation.pos} 位</em>`;
-      card.appendChild(mut);
-
-      const peps = (p.candidates || []).slice(0, 6);
-      const pepBox = el('div', 'neo-peps');
-      peps.forEach((c) => {
-        const s = el('span', 'neo-pep' + (c.mutated ? ' hot' : ''), c.peptide);
-        s.title = `起点 ${c.pos}${c.mut_sites && c.mut_sites.length ? ' · 含突变位点 ' + c.mut_sites.join(',') : ' · 不含突变位点'}`;
-        pepBox.appendChild(s);
-      });
-      if ((p.candidates || []).length > 6) {
-        pepBox.appendChild(el('span', 'neo-pep-more', `+${p.candidates.length - 6}`));
-      }
-      card.appendChild(pepBox);
-      card.appendChild(el('div', 'neo-count', `${p.candidate_count} 条候选肽`));
-      box.appendChild(card);
-    });
-
-    if ((d.notes || []).length) {
-      const noteBox = el('div', 'neo-notes');
-      d.notes.forEach((n) => noteBox.appendChild(el('div', 'neo-note', '⚠ ' + n)));
-      box.appendChild(noteBox);
-    }
-    toast(`已取到 ${d.proteins.length} 条蛋白，共 ${d.total_candidates} 条候选肽`);
-  } catch (e) {
-    box.innerHTML = '';
-    box.appendChild(el('div', 'neo-note', '预览失败：' + e.message));
-    toast(e.message, 'err');
-  } finally {
-    $('btnNeoPreview').disabled = false;
-  }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
-
-function neoFillSample() {
-  $('neoMutations').value = 'KRAS G12D\nTP53 R175H\nSMAD4 R361C';
-  updateNeoStats();
-  $('neoPreview').hidden = true;
-}
-
-/** 从 GDC 结果表里挑出可解析的错义突变，一键导入新抗原模式 */
-function neoFromGdc() {
-  const rows = (resState.gdcRows || []).filter((r) => {
-    const t = String(r.consequence_type || '');
-    return /missense/i.test(t) && r.aa_change;
-  });
-  if (!rows.length) {
-    toast('GDC 结果里没有错义突变，先检索一次再导入', 'err');
-    switchResTab('gdc');
-    setMode('resources');
-    return;
-  }
-  const picked = [];
-  const seen = new Set();
-  rows.forEach((r) => {
-    const aa = String(r.aa_change || '').trim();
-    const gene = String(r.gene || '').trim();
-    if (!gene || !aa) return;
-    const m = aa.match(/^(?:p\.)?([A-Z])(\d+)([A-Z*])$/);
-    if (!m) return;
-    const key = `${gene} ${m[1]}${m[2]}${m[3]}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    picked.push(key);
-  });
-  if (!picked.length) {
-    toast('结果里没有可直接导入的错义突变格式', 'err');
-    return;
-  }
-  $('neoMutations').value = picked.slice(0, 50).join('\n');
-  setMode('neoantigen');
-  updateNeoStats();
-  toast(`已导入 ${Math.min(picked.length, 50)} 个突变`);
-}
-
-function bindNeoEvents() {
-  const ta = $('neoMutations');
-  if (ta) ta.addEventListener('input', updateNeoStats);
-  const bp = $('btnNeoPreview');
-  if (bp) bp.onclick = neoPreview;
-  const bs = $('btnNeoSample');
-  if (bs) bs.onclick = neoFillSample;
-  const bg = $('btnNeoFromGdc');
-  if (bg) bg.onclick = neoFromGdc;
-  // 供浏览器端到端测试与外部脚本调用
-  window.__mhc = Object.assign(window.__mhc || {}, {
-    neoFromGdc, neoFillSample, neoPreview, updateNeoStats, setMode,
-    get resState() { return resState; },
-    get state() { return state; },
-  });
 }
 
 // ─────────────────────────── 事件绑定 ───────────────────────────
@@ -2122,7 +1839,6 @@ function bindEvents() {
   };
 
   bindResourceEvents();
-  bindNeoEvents();
 
   $('tableSearch').addEventListener('input', renderTable);
   $('tableFilter').addEventListener('change', renderTable);
@@ -2180,10 +1896,17 @@ async function agentLoadCfg() {
   } catch (e) { /* ignore */ }
 }
 
+function agentOpenConfig() { $('agentConfigBox').hidden = false; }
+function agentCloseConfig() {
+  $('agentConfigBox').hidden = true;
+  agentLoadCfg();
+}
+
 // 预设下拉选择 → 自动填充 URL/模型 + 提示
 async function agentOnPreset(select) {
+  // 本地直接填充
   const key = select.value;
-  if (!key) { $('agentPresetHint').textContent = ''; return; }
+  if (!key) return;
   try {
     const r = await fetch('/api/agent/presets');
     const pd = await r.json();
@@ -2196,18 +1919,12 @@ async function agentOnPreset(select) {
   } catch (e) { /* ignore */ }
 }
 
-function agentOpenConfig() { $('agentConfigBox').hidden = false; }
-function agentCloseConfig() {
-  $('agentConfigBox').hidden = true;
-  agentLoadCfg();
-}
-
 async function agentSaveCfg() {
   const preset = $('agentPreset') ? $('agentPreset').value : '';
   const base_url = $('agentBaseUrl').value.trim();
   const api_key = $('agentApiKey').value.trim();
   const model = $('agentModel').value.trim();
-  if (!base_url || !model) { toast('请填写 Base URL 与模型名', 'err'); return; }
+  if (!base_url || !model) { toast('请填写 Base URL 与模型名（或选择上方预设）', 'err'); return; }
   const payload = { base_url, model, preset };
   if (api_key) payload.api_key = api_key;
   try {
@@ -2330,9 +2047,7 @@ async function agentSend() {
           assistantWrap.innerHTML = md2html(ev.message || '');
           assistantWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else if (ev.type === 'error') {
-          // 错误消息用 textContent，防止后端透传的 HTML 被当作消息渲染
-          const errEl = agentAppendMsg('assistant', '', '');
-          errEl.textContent = '⚠️ ' + ev.message;
+          agentAppendMsg('assistant', '⚠️ ' + ev.message, '');
         }
       }
     }
@@ -2351,14 +2066,46 @@ function agentAbort() {
 }
 
 // 绑定 agent 事件
+async function agentTestCfg() {
+  const st = document.getElementById('agentCfgStatus');
+  if (!st) return;
+  st.textContent = '测试中…';
+  st.style.color = '';
+  try {
+    const r = await fetch('/api/agent/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base_url: document.getElementById('agentBaseUrl').value.trim(),
+        api_key: document.getElementById('agentApiKey').value.trim(),
+        model: document.getElementById('agentModel').value.trim(),
+      }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      st.textContent = '✅ ' + (d.message || '连接成功');
+      st.style.color = '#16a34a';
+    } else {
+      st.textContent = '❌ ' + (d.message || '测试失败');
+      st.style.color = '#dc2626';
+      if (d.suggestion) toast(d.suggestion, 'err');
+    }
+  } catch (e) {
+    st.textContent = '❌ ' + e.message;
+    st.style.color = '#dc2626';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function agentBind() {
   if (!document.getElementById('btnAgentSend')) return;
   document.getElementById('btnAgentSend').onclick = agentSend;
   document.getElementById('btnAgentConfig').onclick = agentOpenConfig;
-  const psel = document.getElementById('agentPreset');
-  if (psel) psel.addEventListener('change', () => agentOnPreset(psel));
   document.getElementById('btnAgentCfgCancel').onclick = agentCloseConfig;
   document.getElementById('btnAgentSaveCfg').onclick = agentSaveCfg;
+  const tbtn = document.getElementById('btnAgentTest');
+  if (tbtn) tbtn.onclick = agentTestCfg;
+  const psel = document.getElementById('agentPreset');
+  if (psel) psel.onchange = () => agentOnPreset(psel);
   const ai = document.getElementById('agentInput');
   ai.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); agentSend(); }

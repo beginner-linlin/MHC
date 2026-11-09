@@ -107,6 +107,27 @@ NEO_COLUMNS = [
     ("combined_rank", "综合排名%", 12),
 ]
 
+ALIGN_COLUMNS = [
+    ("query", "查询序列", 18),
+    ("query_len", "查询长度", 10),
+    ("ref", "参考序列", 16),
+    ("pos", "起点", 8),
+    ("end", "终点", 8),
+    ("strand", "方向", 7),
+    ("mapq", "MAPQ", 8),
+    ("identity", "一致性", 10),
+    ("matches", "匹配", 8),
+    ("mismatches", "错配", 8),
+    ("insertions", "插入", 8),
+    ("deletions", "缺失", 8),
+    ("nm", "编辑距离", 10),
+    ("score", "比对得分", 10),
+    ("cigar", "CIGAR", 16),
+    ("diff_count", "差异数", 9),
+    ("ref_aligned", "参考片段", 30),
+    ("query_aligned", "查询片段", 30),
+]
+
 HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
 BORDER = Border(*[Side(style="thin", color="D0D7DE")] * 4)
@@ -218,6 +239,7 @@ def export_rows(
         "pipeline": ("串联流水线结果", PIPE_COLUMNS),
         "mutant": ("突变肽筛选结果", MUT_COLUMNS),
         "neoantigen": ("新抗原候选肽", NEO_COLUMNS),
+        "align": ("序列比对结果", ALIGN_COLUMNS),
     }
     label, columns = table.get(kind, ("结果", PAN_COLUMNS))
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

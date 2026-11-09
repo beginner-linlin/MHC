@@ -66,13 +66,6 @@
           <em>新抗原 · 找出突变产生的新肽</em>
         </span>
       </button>
-      <button class="nav-item" data-mode="neoantigen">
-        <span class="nav-icon">◉</span>
-        <span class="nav-label">
-          <strong>新抗原一键筛选</strong>
-          <em>突变 → UniProt → 三步串联</em>
-        </span>
-      </button>
       <div class="nav-sep"></div>
       <button class="nav-item" data-mode="resources">
         <span class="nav-icon">▤</span>
@@ -182,27 +175,6 @@
               <button class="btn btn-ghost" id="btnLoadMutantSample">填入示例突变</button>
             </div>
           </div>
-        </div>
-
-        <!-- 新抗原一键筛选：突变列表 + UniProt 预览 -->
-        <div class="neo-block" id="neoBlock" hidden>
-          <div class="field">
-            <div class="field-head">
-              <label>突变列表（每行一个）</label>
-              <div class="field-actions">
-                <button class="chip" id="btnNeoFromGdc">从 GDC 导入</button>
-                <button class="chip" id="btnNeoSample">填入示例</button>
-              </div>
-            </div>
-            <textarea id="neoMutations" class="seq-area" spellcheck="false"
-              placeholder="KRAS G12D&#10;TP53 R175H&#10;SMAD4 R361C"></textarea>
-            <div class="input-meta">
-              <span id="neoStats">尚未输入突变</span>
-              <span class="grow"></span>
-              <button class="link" id="btnNeoPreview">预览蛋白与候选肽</button>
-            </div>
-          </div>
-          <div class="neo-preview" id="neoPreview" hidden></div>
         </div>
 
         <!-- HLA 选择 -->
@@ -340,10 +312,6 @@
             </div>
           </div>
           <div class="res-meta" id="gdcMeta"></div>
-          <div class="res-actions" id="gdcActions" hidden>
-            <button class="btn btn-primary btn-sm" id="btnGdcToNeo">一键导入新抗原筛选 →</button>
-            <span class="res-actions-hint">自动取 UniProt 野生型序列、构造突变肽、跑三步串联</span>
-          </div>
           <div class="table-scroll res-table-wrap">
             <table class="result-table" id="gdcTable" hidden>
               <thead id="gdcThead"></thead>
@@ -351,9 +319,8 @@
             </table>
           </div>
           <div class="res-hint">
-            <strong>用法提示：</strong>检索到错义突变后，点上方「一键导入新抗原筛选」，
-            工作台会自动用 UniProt 取该基因的野生型蛋白序列、按突变位点构造候选肽，
-            再依次跑 NetChop 酶切 → NetMHCpan 结合 → NetMHCstabpan 稳定性三步串联。
+            <strong>用法提示：</strong>查到突变后，可把「氨基酸改变」对应的野生型蛋白序列（UniProt）放进
+            「突变肽筛选」模式，即可得到该突变产生的候选新抗原肽。
           </div>
         </div>
 
@@ -440,16 +407,17 @@
             <div class="agent-preset-hint" id="agentPresetHint"></div>
           </div>
           <div class="field"><label>API Base URL</label>
-            <input type="text" id="agentBaseUrl" placeholder="如 https://api.siliconflow.cn/v1 或 https://api.deepseek.com/v1">
+            <input type="text" id="agentBaseUrl" placeholder="如 https://api.siliconflow.cn/v1">
           </div>
           <div class="field"><label>API Key</label>
             <input type="password" id="agentApiKey" placeholder="填一次将保存（仅本机）">
           </div>
           <div class="field"><label>模型名</label>
-            <input type="text" id="agentModel" placeholder="如 deepseek-chat / glm-4-flash / qwen-plus">
+            <input type="text" id="agentModel" placeholder="如 Qwen/Qwen2.5-7B-Instruct">
           </div>
           <div class="agent-config-actions">
             <button class="btn btn-primary btn-sm" id="btnAgentSaveCfg">保存</button>
+            <button class="btn btn-ghost btn-sm" id="btnAgentTest">测试连接</button>
             <button class="btn btn-ghost btn-sm" id="btnAgentCfgCancel">取消</button>
             <span class="agent-cfg-status" id="agentCfgStatus"></span>
           </div>
