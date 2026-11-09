@@ -53,18 +53,28 @@ PYEOF
 
 log "提交工作台 /api/jobs/mutant …"
 RESP="$(api_post /api/jobs/mutant "$(cat "$OUT/payload.json")")"
-JOB_ID="$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('job_id',''))" 2>/dev/null || true)"
+JOB_ID="$(echo "$RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('job_id') or (d.get('job') or {}).get('id') or '')" 2>/dev/null || true)"
 [ -n "$JOB_ID" ] || die "提交失败，响应: $(echo "$RESP" | head -c 300)"
 
 log "任务 ID: $JOB_ID，轮询中…"
+STATUS=""
 for i in $(seq 1 240); do
   sleep 5
   ST="$(api_get "/api/jobs/$JOB_ID")"
-  STATUS="$(echo "$ST" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '?')"
+  STATUS="$(echo "$ST" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print((d.get('job') or d).get('status') or '')" 2>/dev/null || echo '?')"
   case "$STATUS" in
     done) break ;;
     failed)
-      MSG="$(echo "$ST" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo '?')"
+      MSG="$(echo "$ST" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print((d.get('job') or d).get('error') or '')" 2>/dev/null || echo '?')"
       die "任务失败: $MSG" ;;
     running|pending) [ $((i % 12)) -eq 0 ] && log "  …进行中 ${i}x5s" ;;
     *) [ $((i % 24)) -eq 0 ] && log "  状态=$STATUS" ;;
@@ -77,7 +87,8 @@ log "导出汇总…"
 python3 - "$OUT/result.json" "$OUT/neoantigen_summary.tsv" <<'PYEOF'
 import json, sys
 r = json.load(open(sys.argv[1]))
-rows = r.get("rows") or r.get("result", {}).get("rows") or []
+job = r.get("job") or {}
+rows = (job.get("result") or {}).get("rows") or r.get("rows") or r.get("result", {}).get("rows") or []
 cols = ["peptide", "protein", "allele", "Score_EL", "%Rank_EL", "Aff(nM)", "BindLevel", "mutation", "pos"]
 with open(sys.argv[2], "w") as fh:
     fh.write("\t".join(c for c in cols) + "\n")

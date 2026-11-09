@@ -239,6 +239,7 @@ function setMode(mode) {
     loadDataPrep();
     return;
   }
+  dpRunStopPoll();
 
   // 突变模式：换掉主输入区
   const isMutant = mode === 'mutant';
@@ -2135,6 +2136,7 @@ document.addEventListener('DOMContentLoaded', function agentBind() {
 
 let dpLoaded = false;
 let dpGuideData = null;
+let dpFallback = {};
 
 const DP_STEP_LABEL = { 1: '① 数据获取', 2: '② 质控比对', 3: '③ 突变检出', 4: '④ 表达定量', 5: '⑤ HLA 分型', 6: '⑥ 新抗原' };
 
@@ -2155,6 +2157,18 @@ function dpStatusBadge(installed, note) {
   return '<span class="dp-badge missing">⬜ 未安装</span>';
 }
 
+function dpFallbackLink(name, installed) {
+  if (installed) return '';
+  const fb = dpFallback[name];
+  if (!fb) return '';
+  if (fb.kind === 'web' && fb.url) {
+    return ' <a class="dp-fallback-link" href="' + dpEscape(fb.url) + '" target="_blank" rel="noopener"'
+      + ' title="' + dpEscape(fb.how || '用网页服务完成这一步') + '">🌐 网页完成</a>';
+  }
+  const tip = fb.how || fb.title || '';
+  return tip ? ' <span class="dp-fallback-tip" title="' + dpEscape(tip) + '">💡 ' + dpEscape(fb.title || '替代方案') + '</span>' : '';
+}
+
 async function loadDataPrep(force) {
   if (dpLoaded && !force) return;
   dpLoaded = true;
@@ -2171,6 +2185,10 @@ async function loadDataPrep(force) {
     guide = await fetch('/api/dataprep/guide').then((r) => r.json());
     dpGuideData = guide;
   } catch (e) { /* guide 失败时保留空容器 */ }
+  try {
+    const fb = await fetch('/api/dataprep/fallback').then((r) => r.json());
+    dpFallback = (fb && fb.fallback) || {};
+  } catch (e) { dpFallback = {}; }
 
   if (guide) {
     renderDpRoute(guide);
@@ -2217,7 +2235,8 @@ function renderDpTools(inv) {
       + '<td class="dp-ver" title="' + dpEscape(t.version || '') + '">' + dpEscape(t.version || '—') + '</td>'
       + '<td>' + dpEscape(t.source || '') + '</td>'
       + '<td class="dp-path" title="' + dpEscape(t.path || '') + '">' + dpEscape(t.path || '—') + '</td>'
-      + '<td>' + dpStatusBadge(t.installed, t.note) + '</td>'
+      + '<td>' + dpStatusBadge(t.installed, t.note)
+      + dpFallbackLink(name, t.installed) + '</td>'
       + '<td><button class="btn btn-ghost btn-sm dp-check-btn" data-tool="' + dpEscape(name) + '">检测</button></td>'
       + '</tr>';
   }).join('');
@@ -2320,7 +2339,223 @@ document.addEventListener('DOMContentLoaded', function dataprepBind() {
     const sel = document.getElementById('dpCheckTool');
     if (sel && sel.value) dpRunCheck(sel.value);
   };
+  // ---- 一键启动流水线 ----
+  dpRunBindModeChips();
+  const startBtn = document.getElementById('btnDpRunStart');
+  if (startBtn) startBtn.onclick = dpRunStart;
+  const stopBtn = document.getElementById('btnDpRunStop');
+  if (stopBtn) stopBtn.onclick = dpRunStop;
+  const runsBtn = document.getElementById('btnDpRunsRefresh');
+  if (runsBtn) runsBtn.onclick = dpLoadRuns;
+  const uplBtn = document.getElementById('btnDpUpload');
+  const uplInput = document.getElementById('dpRunUploadFile');
+  if (uplBtn && uplInput) {
+    uplBtn.onclick = () => uplInput.click();
+    uplInput.onchange = dpRunUpload;
+  }
+  dpRunApplyModeFields();
 });
+
+// ---- 流水线一键运行（TCGA/ICGC/本地数据 → run_all.sh → 实时九步进度）----
+
+let dpRunMode = 'fastq';
+let dpRunTimer = null;
+let dpRunCurId = null;
+
+const DP_RUN_STATE_LABEL = {
+  running: ['运行中', 'dp-run-state running'],
+  done: ['✅ 已完成', 'dp-run-state done'],
+  failed: ['❌ 失败', 'dp-run-state failed'],
+  stopped: ['■ 已停止', 'dp-run-state stopped'],
+  blocked_gdc: ['⚠ gdc-client 缺失', 'dp-run-state blocked'],
+};
+
+function dpRunMsg(text, cls) {
+  const el = document.getElementById('dpRunMsg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'dp-run-msg' + (cls ? ' ' + cls : '');
+}
+
+function dpRunApplyModeFields() {
+  document.querySelectorAll('#dpRunCard [data-runmode-field]').forEach((el) => {
+    const modes = String(el.dataset.runmodeField || '').split(' ');
+    el.style.display = modes.includes(dpRunMode) ? '' : 'none';
+  });
+}
+
+function dpRunBindModeChips() {
+  document.querySelectorAll('#dpRunModes .dp-chip').forEach((chip) => {
+    chip.onclick = () => {
+      dpRunMode = chip.dataset.runmode || 'fastq';
+      document.querySelectorAll('#dpRunModes .dp-chip').forEach((c) => c.classList.toggle('on', c === chip));
+      dpRunApplyModeFields();
+    };
+  });
+}
+
+function dpRunCollectSpec() {
+  const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const spec = { mode: dpRunMode, alleles: v('dpRunAlleles'), work: v('dpRunWork') || undefined };
+  if (dpRunMode === 'fastq') {
+    spec.tumor_r1 = v('dpRunR1'); spec.tumor_r2 = v('dpRunR2');
+    spec.normal_r1 = v('dpRunN1'); spec.normal_r2 = v('dpRunN2');
+  } else if (dpRunMode === 'manifest') {
+    spec.manifest = v('dpRunManifest');
+  } else {
+    spec.maf_vcf = v('dpRunMafVcf');
+  }
+  return spec;
+}
+
+async function dpRunStart() {
+  const spec = dpRunCollectSpec();
+  const need = dpRunMode === 'fastq' ? ['tumor_r1', 'tumor_r2']
+    : dpRunMode === 'manifest' ? ['manifest'] : ['maf_vcf'];
+  const missing = need.filter((k) => !spec[k]);
+  if (missing.length) {
+    dpRunMsg('请填写: ' + missing.map((k) => ({ tumor_r1: '肿瘤 R1', tumor_r2: '肿瘤 R2', manifest: 'manifest 文件', maf_vcf: 'VCF/MAF 文件' }[k])).join('、'), 'err');
+    return;
+  }
+  dpRunMsg('启动中…');
+  try {
+    const r = await fetch('/api/pipeline/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spec),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      dpRunMsg('❌ ' + (d.error || ('HTTP ' + r.status)), 'err');
+      return;
+    }
+    dpRunMsg('');
+    dpRunShow(d.run_id);
+    dpRunSchedulePoll();
+  } catch (e) {
+    dpRunMsg('❌ ' + e.message, 'err');
+  }
+}
+
+function dpRunShow(runId) {
+  dpRunCurId = runId;
+  const panel = document.getElementById('dpRunPanel');
+  if (panel) panel.hidden = false;
+  const idEl = document.getElementById('dpRunId');
+  if (idEl) idEl.textContent = 'run: ' + runId;
+}
+
+function dpRunSchedulePoll() {
+  if (dpRunTimer) clearTimeout(dpRunTimer);
+  dpRunTimer = setTimeout(dpRunPoll, 2500);
+}
+
+function dpRunStopPoll() {
+  if (dpRunTimer) { clearTimeout(dpRunTimer); dpRunTimer = null; }
+}
+
+async function dpRunPoll() {
+  if (!dpRunCurId) return;
+  let st;
+  try {
+    const r = await fetch('/api/pipeline/status/' + dpRunCurId);
+    st = await r.json();
+    if (!r.ok) { dpRunSchedulePoll(); return; }
+  } catch (e) { dpRunSchedulePoll(); return; }
+  dpRenderRun(st);
+  if (st.state === 'running') dpRunSchedulePoll();
+  else dpRunStopPoll();
+}
+
+function dpRenderRun(st) {
+  const stEl = document.getElementById('dpRunState');
+  if (stEl) {
+    const [label, cls] = DP_RUN_STATE_LABEL[st.state] || [st.state, ''];
+    stEl.textContent = label;
+    stEl.className = cls;
+  }
+  const stepsEl = document.getElementById('dpRunSteps');
+  if (stepsEl && Array.isArray(st.steps)) {
+    const icon = { pending: '○', running: '<span class="dp-spin">◔</span>', done: '✓', failed: '✗' };
+    stepsEl.innerHTML = st.steps.map((s) =>
+      '<div class="dp-pstep ' + s.status + '" title="' + dpEscape(s.script) + '">'
+      + '<span class="dp-pno">' + s.no + '</span>'
+      + '<span class="dp-pname">' + dpEscape(s.name) + '</span>'
+      + '<span class="dp-picon">' + (icon[s.status] || '○') + '</span>'
+      + '</div>'
+    ).join('');
+  }
+  const logEl = document.getElementById('dpRunLog');
+  if (logEl && Array.isArray(st.log_tail)) {
+    logEl.textContent = st.log_tail.join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  if (st.note) dpRunMsg('ℹ ' + st.note);
+  if (st.state === 'done') dpRunMsg('✅ 流水线完成，结果在 ' + (st.work || '') + '（neoantigen/ 下可直接导入工作台）', 'ok');
+}
+
+async function dpRunStop() {
+  if (!dpRunCurId) return;
+  try {
+    const r = await fetch('/api/pipeline/stop/' + dpRunCurId, { method: 'POST' });
+    const d = await r.json();
+    dpRunMsg(d.ok ? '已发送停止信号' : '停止失败：' + (d.error || 'HTTP ' + r.status), d.ok ? 'ok' : 'err');
+    dpRunSchedulePoll();
+  } catch (e) {
+    dpRunMsg('❌ ' + e.message, 'err');
+  }
+}
+
+async function dpRunUpload() {
+  const input = document.getElementById('dpRunUploadFile');
+  if (!input || !input.files || !input.files[0]) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  dpRunMsg('上传中…');
+  try {
+    const r = await fetch('/api/pipeline/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      dpRunMsg('❌ ' + (d.error || 'HTTP ' + r.status), 'err');
+      return;
+    }
+    const target = dpRunMode === 'manifest' ? 'dpRunManifest' : 'dpRunMafVcf';
+    const el = document.getElementById(target);
+    if (el) el.value = d.path;
+    dpRunMsg('✅ 已上传: ' + d.path, 'ok');
+  } catch (e) {
+    dpRunMsg('❌ ' + e.message, 'err');
+  }
+}
+
+async function dpLoadRuns() {
+  const hist = document.getElementById('dpRunsHist');
+  if (!hist) return;
+  let runs = [];
+  try {
+    const r = await fetch('/api/pipeline/runs');
+    const d = await r.json();
+    runs = (d && d.runs) || [];
+  } catch (e) { /* ignore */ }
+  if (!runs.length) {
+    hist.innerHTML = '<div class="dp-empty">还没有流水线运行记录</div>';
+    return;
+  }
+  hist.innerHTML = '<div class="dp-hist-title">运行历史</div>' + runs.map((r) => {
+    const [label, cls] = DP_RUN_STATE_LABEL[r.state] || [r.state || '', ''];
+    return '<button class="dp-hist-row ' + cls + '" data-run="' + dpEscape(r.run_id) + '">'
+      + '<span>' + dpEscape(r.run_id) + '</span>'
+      + '<span>' + dpEscape(r.mode) + '</span>'
+      + '<span>' + dpEscape(r.steps_done || '') + '</span>'
+      + '<span>' + dpEscape(label) + '</span>'
+      + '</button>';
+  }).join('');
+  hist.querySelectorAll('.dp-hist-row').forEach((btn) => {
+    btn.onclick = () => {
+      dpRunShow(btn.dataset.run);
+      dpRunSchedulePoll();
+    };
+  });
+}
 
 async function init() {
   bindEvents();

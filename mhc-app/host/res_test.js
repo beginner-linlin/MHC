@@ -52,9 +52,9 @@ async function shot(page, name) {
     ok('标题切换', title.includes('数据库'), `=${title}`);
     await shot(page, 'r02_resources');
 
-    // ---------- 3. 三个子页签 ----------
+    // ---------- 3. 四个子页签 ----------
     const tabs = await page.locator('.res-tabs .chip').count();
-    ok('3 个子页签', tabs === 3, `=${tabs}`);
+    ok('4 个子页签', tabs === 4, `=${tabs}`);
     ok('GDC 页默认显示', await page.locator('#resPaneGdc').isVisible());
     ok('IEDB 页默认隐藏', !(await page.locator('#resPaneIedb').isVisible()));
 

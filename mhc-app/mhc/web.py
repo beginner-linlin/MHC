@@ -1282,6 +1282,77 @@ def guide_pipeline() -> Response:
     return Response(page, mimetype="text/html")
 
 
+# ---------------------------------------------------------------- 流水线运行器（设计书①→⑥ 一键跑）
+
+
+@app.post("/api/pipeline/start")
+def pipeline_start() -> Response:
+    from . import pipeweb
+    spec = body()
+    if not isinstance(spec, dict):
+        return api_error("请求体必须是 JSON 对象", 400)
+    try:
+        meta = pipeweb.start(spec)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except FileNotFoundError as exc:
+        return api_error(f"流水线脚本缺失：{exc}", 500)
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"启动失败：{exc}", 500)
+    return jsonify({"ok": True, "run_id": meta["run_id"], "mode": meta["mode"],
+                    "state": meta["state"], "work": meta["work"]})
+
+
+@app.get("/api/pipeline/status/<run_id>")
+def pipeline_status(run_id: str) -> Response:
+    from . import pipeweb
+    st = pipeweb.status(run_id)
+    if st is None:
+        return api_error("run 不存在", 404)
+    return jsonify({"ok": True, **st})
+
+
+@app.get("/api/pipeline/runs")
+def pipeline_runs() -> Response:
+    from . import pipeweb
+    return jsonify({"ok": True, "runs": pipeweb.list_runs()})
+
+
+@app.post("/api/pipeline/stop/<run_id>")
+def pipeline_stop(run_id: str) -> Response:
+    from . import pipeweb
+    r = pipeweb.stop(run_id)
+    if not r.get("ok"):
+        return api_error(r.get("error") or "停止失败（进程可能已退出）", 400)
+    return jsonify({"ok": True, "stopped": run_id})
+
+
+@app.post("/api/pipeline/upload")
+def pipeline_upload() -> Response:
+    from . import pipeweb
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return api_error("请选择要上传的文件（manifest / MAF / VCF）", 400)
+    data = f.read()
+    if len(data) > 32 * 1024 * 1024:
+        return api_error("文件超过 32MB 上限", 400)
+    info = pipeweb.save_upload(f.filename, data)
+    return jsonify({"ok": True, **info})
+
+
+@app.get("/api/dataprep/fallback")
+def dataprep_fallback() -> Response:
+    """工具「网页完成」兜底清单（tool-finisher 帮手产出）。"""
+    p = Path("/opt/bio/app/data/dataprep_fallback.json")
+    if not p.exists():
+        return jsonify({"ok": True, "fallback": {}})
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"兜底清单解析失败：{exc}", 500)
+    return jsonify({"ok": True, "fallback": data})
+
+
 # ---------------------------------------------------------------- 静态页
 
 

@@ -405,6 +405,42 @@
       </div>
       <div class="dp-body">
         <div class="dp-route" id="dpRoute"></div>
+
+        <h3 class="dp-h">🚀 启动流水线（输入 TCGA/ICGC 或本地数据，实时反映每步进度）</h3>
+        <div class="dp-run-card" id="dpRunCard">
+          <div class="dp-run-modes" id="dpRunModes">
+            <button class="dp-chip on" data-runmode="fastq">FASTQ 全流程</button>
+            <button class="dp-chip" data-runmode="manifest">GDC / ICGC manifest</button>
+            <button class="dp-chip" data-runmode="mafvcf">已注释 MAF·VCF（跳上游）</button>
+          </div>
+          <div class="dp-run-grid">
+            <label class="dp-run-field" data-runmode-field="fastq">肿瘤 FASTQ R1（WSL 路径）<input id="dpRunR1" placeholder="/mnt/c/.../tumor_R1.fastq.gz 或 ~/..."></label>
+            <label class="dp-run-field" data-runmode-field="fastq">肿瘤 FASTQ R2<input id="dpRunR2" placeholder="/mnt/c/.../tumor_R2.fastq.gz"></label>
+            <label class="dp-run-field" data-runmode-field="fastq">正常对照 R1（可选）<input id="dpRunN1" placeholder="配对正常样本 R1"></label>
+            <label class="dp-run-field" data-runmode-field="fastq">正常对照 R2（可选）<input id="dpRunN2"></label>
+            <label class="dp-run-field" data-runmode-field="manifest">GDC manifest 文件<input id="dpRunManifest" placeholder="gdc-client_manifest_*.txt 路径"></label>
+            <label class="dp-run-field" data-runmode-field="mafvcf">已注释 VCF / MAF 文件<input id="dpRunMafVcf" placeholder="snpEff/VEP 注释过的 VCF 或 TCGA Masked MAF"></label>
+            <label class="dp-run-field" data-runmode-field="manifest"><span class="dp-upl"><input id="dpRunUploadFile" type="file" accept=".txt,.maf,.vcf,.gz,.tsv,.csv" hidden><button class="btn btn-ghost btn-sm" id="btnDpUpload">上传文件…</button></span></label>
+            <label class="dp-run-field">等位基因（逗号分隔，FASTQ 模式可留空自动 OptiType）<input id="dpRunAlleles" placeholder="HLA-A*02:01,HLA-A*11:01,…"></label>
+            <label class="dp-run-field">工作目录<input id="dpRunWork" placeholder="~/mhc-pipeline/patient1"></label>
+          </div>
+          <div class="dp-run-actions">
+            <button class="btn btn-primary" id="btnDpRunStart">🚀 启动流水线</button>
+            <button class="btn btn-ghost btn-sm" id="btnDpRunsRefresh">运行历史</button>
+            <span class="dp-run-msg" id="dpRunMsg"></span>
+          </div>
+          <div class="dp-run-panel" id="dpRunPanel" hidden>
+            <div class="dp-run-head">
+              <span class="dp-run-id" id="dpRunId"></span>
+              <span class="dp-run-state" id="dpRunState"></span>
+              <button class="btn btn-ghost btn-sm" id="btnDpRunStop">■ 停止</button>
+            </div>
+            <div class="dp-steps" id="dpRunSteps"></div>
+            <pre class="dp-log" id="dpRunLog"></pre>
+          </div>
+          <div class="dp-runs-hist" id="dpRunsHist"></div>
+        </div>
+
         <h3 class="dp-h">上游工具安装状态</h3>
         <div id="dpToolsBox">
           <table class="result-table dp-tools-table" id="dpToolsTable" hidden>

@@ -13,7 +13,7 @@
 set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 
-R1=""; R2=""; N1=""; N2=""; ALLELES=""; REF="$HOME/mhc-pipeline/ref"; WORK="$HOME/mhc-pipeline/patient1"
+R1=""; R2=""; N1=""; N2=""; ALLELES=""; REF="$HOME/mhc-pipeline/ref"; WORK="$HOME/mhc-pipeline/patient1"; EXT_VCF=""
 START=1; STOP=9; DRYRUN=0; FORCE=0; WITH_STAR=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,14 +24,20 @@ while [ $# -gt 0 ]; do
     --work) WORK="$2"; shift 2 ;;
     --start) START="$2"; shift 2 ;;
     --stop) STOP="$2"; shift 2 ;;
+    --vcf) EXT_VCF="$2"; shift 2 ;;
+    --maf) EXT_VCF="$2"; shift 2 ;;
     --with-star) WITH_STAR=1; shift ;;
     --dry-run) DRYRUN=1; shift ;;
     --force) FORCE=1; shift ;;
     *) die "未知参数: $1（-h 看用法）" ;;
   esac
 done
-[ -n "$R1" ] || die "必须提供肿瘤 FASTQ: --fastq R1 R2"
-[ -n "$ALLELES" ] && [ "$STOP" = "9" ] || [ "$STOP" -lt 9 ] || die "第 9 步必须 --alleles 提供等位基因"
+[ -n "$EXT_VCF" ] || [ -n "$R1" ] || die "必须提供肿瘤 FASTQ: --fastq R1 R2，或已注释 VCF/MAF: --vcf/--maf PATH"
+if [ -n "$EXT_VCF" ]; then
+  must_file "$EXT_VCF"
+  [ "$START" -lt 8 ] && START=8
+  log "外部注释 VCF/MAF 模式: 跳过 ②-⑦，从第 8 步起跑（$EXT_VCF）"
+fi
 mkdir -p "$WORK"
 
 run_step() {
@@ -48,6 +54,12 @@ run_step() {
   fi
 }
 
+if [ -n "$EXT_VCF" ]; then
+  # 外部 VCF/MAF：①-⑦ 全跳（无需参考基因组），直达第 8 步
+  log "== 外部注释 VCF/MAF 模式: 跳过 ①-⑦ =="
+  for n in 1 2 3 4 5 6 7; do touch "$WORK/.skip_step$n"; done
+  run_step 8 80_extract_mutations.sh "$EXT_VCF" "$WORK/neoantigen"
+else
 # 1 参考基因组
 run_step 1 10_prepare_ref.sh "$REF" $([ "$WITH_STAR" = "1" ] && echo "WITH_STAR=1")
 # 2 质控剪接
@@ -82,8 +94,21 @@ run_step 6 60_expression.sh "$REF/genome.fa" "$B1" "$B2" "$WORK/expression"
 run_step 7 70_hla_typing.sh "$WORK/align/tumor.sorted.mkdup.bam" "$WORK/hla" --dna
 # 8 提取突变肽段
 run_step 8 80_extract_mutations.sh "$WORK/variants/annotated.vcf" "$WORK/neoantigen"
-# 9 工作台预测
-run_step 9 90_neoantigen.sh "$WORK/neoantigen/neoantigen.json" "$WORK/neoantigen/proteins.fasta" "$WORK/neoantigen" --alleles "$ALLELES"
+fi
+# 9 工作台预测（等位基因: 显式提供 > OptiType 分型结果 > 报错）
+if [ "$STOP" = "9" ] && [ -z "$ALLELES" ]; then
+  HLA_TSV="$(ls "$WORK"/hla/*.tsv 2>/dev/null | head -1 || true)"
+  [ -n "$HLA_TSV" ] || die "缺等位基因: 用 --alleles 指定（如 HLA-A*02:01），或先跑第 7 步让 OptiType 自动分型"
+  ALLELES="$(awk -F'\t' 'NR==1{o="";for(i=1;i<=6;i++) if($i ~ /^HLA/){o=(o==""?$i:o","$i)} print o; exit}' "$HLA_TSV")"
+  printf '%s\n' "$ALLELES" > "$WORK/hla/alleles.txt"
+  log "等位基因来自 OptiType 分型: $ALLELES"
+fi
+if [ -s "$WORK/neoantigen/proteins.fasta" ]; then
+  run_step 9 90_neoantigen.sh "$WORK/neoantigen/neoantigen.json" "$WORK/neoantigen/proteins.fasta" "$WORK/neoantigen" --alleles "$ALLELES"
+else
+  log "第 8 步提取到 0 个可用突变，跳过第 9 步预测（无候选新抗原）"
+  touch "$WORK/.done_step9"
+fi
 
 log "全部完成。患者目录: $WORK"
 [ "$DRYRUN" = "0" ] && ls "$WORK"

@@ -1389,6 +1389,78 @@ input[type="text"]:focus, select:focus {
 .dp-doc-link { margin-left: 10px; font-size: 12px; color: var(--primary); }
 .dp-loading { color: var(--text-3); font-size: 12.5px; padding: 10px 2px; }
 .dp-loading.err { color: #dc2626; }
+.dp-fallback-link { font-size: 11.5px; color: var(--primary); margin-left: 6px; }
+.dp-fallback-tip { font-size: 11px; color: #92400e; margin-left: 6px; cursor: help; }
+
+/* ---- 一键启动流水线 ---- */
+.dp-run-card {
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+  background: var(--bg-2, #f8fafc); display: flex; flex-direction: column; gap: 10px;
+}
+.dp-run-modes { display: flex; gap: 8px; flex-wrap: wrap; }
+.dp-chip {
+  border: 1px solid var(--border); background: #fff; border-radius: 999px;
+  padding: 5px 14px; font-size: 12.5px; cursor: pointer; color: var(--text-2);
+}
+.dp-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.dp-run-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.dp-run-field { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-2); }
+.dp-run-field input {
+  height: 30px; border: 1px solid var(--border); border-radius: 6px; padding: 0 8px;
+  font-size: 12px; font-family: var(--mono); background: #fff;
+}
+.dp-run-field input:focus { outline: 1.5px solid var(--primary); border-color: transparent; }
+.dp-upl { display: flex; align-items: center; height: 30px; }
+.dp-run-actions { display: flex; align-items: center; gap: 10px; }
+.dp-run-msg { font-size: 12px; color: var(--text-2); word-break: break-all; }
+.dp-run-msg.ok { color: #16a34a; }
+.dp-run-msg.err { color: #dc2626; }
+.dp-run-panel { border-top: 1px dashed var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.dp-run-head { display: flex; align-items: center; gap: 10px; }
+.dp-run-id { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
+.dp-run-state { font-size: 12.5px; font-weight: 650; }
+.dp-run-state.running { color: var(--primary); }
+.dp-run-state.done { color: #16a34a; }
+.dp-run-state.failed { color: #dc2626; }
+.dp-run-state.stopped { color: var(--text-3); }
+.dp-run-state.blocked { color: #b45309; }
+.dp-steps { display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; }
+.dp-pstep {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 4px; background: #fff;
+  font-size: 11px; color: var(--text-3);
+}
+.dp-pstep .dp-pno { font-weight: 700; font-size: 12.5px; color: var(--text); }
+.dp-pstep .dp-pname { text-align: center; line-height: 1.3; }
+.dp-pstep .dp-picon { font-size: 13px; }
+.dp-pstep.running { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+.dp-pstep.running .dp-pno { color: var(--primary); }
+.dp-pstep.done { border-color: #86efac; background: #f0fdf4; color: #16a34a; }
+.dp-pstep.done .dp-pno { color: #16a34a; }
+.dp-pstep.failed { border-color: #fca5a5; background: #fef2f2; color: #dc2626; }
+.dp-pstep.failed .dp-pno { color: #dc2626; }
+.dp-spin { display: inline-block; animation: dp-rotate 1.2s linear infinite; }
+@keyframes dp-rotate { to { transform: rotate(360deg); } }
+.dp-log {
+  background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 10px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+}
+.dp-runs-hist { display: flex; flex-direction: column; gap: 4px; }
+.dp-hist-title { font-size: 12px; font-weight: 650; color: var(--text-2); margin-top: 2px; }
+.dp-hist-row {
+  display: grid; grid-template-columns: 1.6fr 0.8fr 0.4fr 1fr; gap: 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff;
+  padding: 6px 10px; font-size: 11.5px; cursor: pointer; text-align: left;
+  font-family: var(--mono);
+}
+.dp-hist-row:hover { border-color: var(--primary); }
+.dp-hist-row.done { color: #16a34a; }
+.dp-hist-row.failed { color: #dc2626; }
+.dp-hist-row.stopped { color: var(--text-3); }
+@media (max-width: 980px) {
+  .dp-steps { grid-template-columns: repeat(3, 1fr); }
+}
 
 @media (max-width: 980px) {
   .dp-step { grid-template-columns: 34px 84px 1fr; }

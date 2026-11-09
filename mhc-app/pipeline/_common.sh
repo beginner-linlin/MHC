@@ -46,4 +46,4 @@ api_post() { curl -s -X POST -H 'Content-Type: application/json' -d "$2" "$MHC_A
 api_get()  { curl -s "$MHC_API$1"; }
 
 usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//'; }
-[ "${1:-}" = "-h" ] && { usage; exit 0; }
+case "${1:-}" in -h|--help) usage; exit 0;; esac

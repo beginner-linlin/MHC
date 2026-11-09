@@ -16,7 +16,53 @@ command -v python3  >/dev/null 2>&1 || die "缺少 python3"
 mkdir -p "$OUT"
 
 log "提取错义突变（识别 snpEff ANN 与 VEP CSQ 两种注释格式）…"
-bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO\n' "$VCF" > "$OUT/all_variants.tsv"
+if head -c 4096 "$VCF" | grep -qE "Hugo_Symbol|Tumor_Seq_Allele2|Variant_Classification"; then
+  # ---- MAF 格式直读（TCGA/ICGC 现成注释 MAF，免 snpEff/VEP）----
+  log "检测到 MAF 格式（Hugo_Symbol/Tumor_Seq_Allele2 表头），直接解析，免注释…"
+  python3 - "$VCF" "$OUT/all_variants.tsv" <<'PYEOF'
+import sys, gzip
+src, dst = sys.argv[1], sys.argv[2]
+op = gzip.open if src.endswith(".gz") else open
+n = 0
+with op(src, "rt", encoding="utf-8", errors="replace") as fh, open(dst, "w") as out:
+    header = None
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line or line.startswith("##"):
+            continue
+        if line.startswith("#"):
+            header = line.lstrip("#").split("\t"); continue
+        if header is None:
+            if "Hugo_Symbol" in line or "Tumor_Seq_Allele2" in line:
+                header = line.split("\t"); continue
+            continue
+        f = line.split("\t")
+        if len(f) < len(header):
+            f += [""] * (len(header) - len(f))
+        d = dict(zip(header, f))
+        if "Missense" not in d.get("Variant_Classification", ""):
+            continue
+        gene = d.get("Hugo_Symbol") or d.get("Gene") or ""
+        hgvsp = (d.get("HGVSp") or "").strip()
+        if ":p." in hgvsp:
+            hgvsp = hgvsp.split(":p.")[-1]
+            hgvsp = "p." + hgvsp
+        if not hgvsp.startswith("p."):
+            aac = (d.get("Amino_Acid_Change") or "").strip()
+            if aac:
+                aac = aac.split("/")[0] if "/" in aac and not aac.startswith("p.") else aac
+                hgvsp = aac if aac.startswith("p.") else "p." + aac
+        if not hgvsp.startswith("p.") or not gene:
+            continue
+        info = "ANN=M|missense_variant||%s||||||%s|" % (gene, hgvsp)
+        out.write("\t".join([d.get("Chromosome", "0"), d.get("Start_Position", "0"),
+                             d.get("Reference_Allele", ""), d.get("Tumor_Seq_Allele2", ""), info]) + "\n")
+        n += 1
+print(f"[80] MAF 解析完成: {n} 行错义 → {dst}")
+PYEOF
+else
+  bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO\n' "$VCF" > "$OUT/all_variants.tsv"
+fi
 
 python3 - "$OUT/all_variants.tsv" "$OUT" <<'PYEOF'
 import re, sys, json, urllib.request, time
@@ -45,13 +91,18 @@ for line in open(src):
     f = line.rstrip("\n").split("\t")
     if len(f) < 5: continue
     info = f[4]
-    # --- snpEff ANN ---
+    # --- snpEff ANN（字段序随版本变化，后果/基因/ HGVS.p 按模式识别，不硬编码下标）---
     for ann in re.findall(r"(?:^|;)ANN=([^;]+)", info):
         for a in ann.split(","):
             p = a.split("|")
             if len(p) < 11: continue
-            if "missense_variant" not in p[1]: continue
-            gene = p[3]; hgvsp = p[9]
+            cons = " ".join(p[1:3])
+            if "missense_variant" not in cons: continue
+            gene = p[3]
+            hgvsp = ""
+            for v in p:
+                if re.match(r"^p\.[A-Za-z]{1,3}\d+", v):
+                    hgvsp = v; break
             ch = hgvs_p_to_change(hgvsp)
             if ch:
                 key = (gene, ch[1])

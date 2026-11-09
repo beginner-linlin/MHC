@@ -1007,6 +1007,10 @@ def _run_local_job(kind: str, payload: dict) -> dict:
     if j.status != "done":
         return {"error": f"任务{ '失败' if j.status=='failed' else j.status }: {j.error or ''}"}
     res = j.result if isinstance(j.result, dict) else {}
+    # 任务体内部捕获的异常会以 result["error"] 形式落库（状态仍是 done），
+    # 必须显式上抛，否则调用方看到的是 count=0 的“成功”，错误被静默吞掉。
+    if res.get("error"):
+        return {"error": res["error"], "job_id": job.id}
     return {
         "job_id": job.id,
         "rows": res.get("rows", []),
@@ -1244,7 +1248,9 @@ def run_agent_turn(sid: str, user_text: str, on_event: Callable[[dict], None] | 
     if not cfg.ready:
         yield {"type": "error", "message": "尚未配置大模型 API。请先在「智能助手」页的设置里填写 base_url / api_key / model。"}
         return
-    emit = on_event or (lambda e: None)
+    # 注意：本函数是生成器，工具事件必须 yield 出来才能进 SSE 流。
+    # 早期版本用 emit = on_event or (lambda e: None)，导致 tool_start/tool_result
+    # 被静默丢弃，前端只能看到最后的 final，看起来像「命令没有执行」。
 
     history = get_history(sid)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
@@ -1286,7 +1292,10 @@ def run_agent_turn(sid: str, user_text: str, on_event: Callable[[dict], None] | 
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 args = {}
-            emit({"type": "tool_start", "name": name, "args": args})
+            _ev = {"type": "tool_start", "name": name, "args": args}
+            if on_event:
+                on_event(_ev)
+            yield _ev
             result = call_tool(name, args)
             # 截断超长结果保护上下文
             text = json.dumps(result, ensure_ascii=False)
@@ -1301,7 +1310,9 @@ def run_agent_turn(sid: str, user_text: str, on_event: Callable[[dict], None] | 
             event = {"type": "tool_result", "name": name,
                      "ok": not (isinstance(result, dict) and "error" in result),
                      "preview": text[:400]}
-            emit(event)
+            if on_event:
+                on_event(event)
+            yield event
             tool_calls_log.append({"name": name, "args": args, "ok": event["ok"]})
             messages.append({
                 "role": "tool", "tool_call_id": call.get("id", ""), "content": text,
