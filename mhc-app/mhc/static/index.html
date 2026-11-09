@@ -74,6 +74,13 @@
           <em>GDC 突变检索 · IEDB 云预测 · 外链</em>
         </span>
       </button>
+      <button class="nav-item" data-mode="dataprep">
+        <span class="nav-icon">📦</span>
+        <span class="nav-label">
+          <strong>数据准备</strong>
+          <em>TCGA 数据 · 上游工具 · 流水线</em>
+        </span>
+      </button>
       <button class="nav-item" data-mode="agent">
         <span class="nav-icon">🧬</span>
         <span class="nav-label">
@@ -384,6 +391,39 @@
           <div class="res-grid" id="resToolGrid"></div>
         </div>
 
+      </div>
+    </section>
+
+    <!-- 数据准备：设计书①→⑥上游工具、TCGA 数据获取、本地流水线（占满右侧两栏） -->
+    <section class="panel panel-dataprep" id="dataprepPanel" hidden>
+      <div class="dp-head">
+        <div>
+          <h2>数据准备</h2>
+          <p>设计书十步路线（①数据获取 → ⑥新抗原预测）的上游工具安装状态、TCGA-PAAD 数据获取指引与本地流水线脚本。</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnDpRefresh">刷新状态</button>
+      </div>
+      <div class="dp-body">
+        <div class="dp-route" id="dpRoute"></div>
+        <h3 class="dp-h">上游工具安装状态</h3>
+        <div id="dpToolsBox">
+          <table class="result-table dp-tools-table" id="dpToolsTable" hidden>
+            <thead><tr><th>工具</th><th>步骤</th><th>版本</th><th>来源</th><th>路径</th><th>状态</th><th></th></tr></thead>
+            <tbody id="dpToolsTbody"></tbody>
+          </table>
+          <div class="dp-empty" id="dpToolsEmpty" hidden>工具清单尚未生成（安装仍在进行），稍后点「刷新状态」。可先用下方「在线检测」逐个验证。</div>
+        </div>
+        <div class="dp-check-row">
+          <select id="dpCheckTool" class="dp-select"></select>
+          <button class="btn btn-ghost btn-sm" id="btnDpCheck">在线检测</button>
+          <span class="dp-check-out" id="dpCheckOut"></span>
+        </div>
+        <h3 class="dp-h">TCGA-PAAD 数据获取</h3>
+        <div class="dp-guide" id="dpTcga"></div>
+        <h3 class="dp-h">参考基因组准备（一次性）</h3>
+        <div class="dp-guide" id="dpRef"></div>
+        <h3 class="dp-h">本地流水线脚本（①→⑥ 串联）</h3>
+        <div class="dp-guide" id="dpPipe"></div>
       </div>
     </section>
 

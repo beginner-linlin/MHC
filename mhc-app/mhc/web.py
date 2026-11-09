@@ -1165,6 +1165,123 @@ def agent_get_config():
     from . import agent
     return jsonify({"ok": True, "config": agent.get_agent_config_public()})
 
+
+# ---------------------------------------------------------------- 数据准备（设计书①-⑥上游）
+
+
+@app.get("/api/dataprep/tools")
+def dataprep_tools() -> Response:
+    from . import dataprep
+    try:
+        inv = dataprep.load_inventory()
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"读取工具清单失败：{exc}", 500)
+    return jsonify(inv)
+
+
+@app.get("/api/dataprep/guide")
+def dataprep_guide() -> Response:
+    from . import dataprep
+    return jsonify(dataprep.guide())
+
+
+@app.post("/api/dataprep/check")
+def dataprep_check() -> Response:
+    from . import dataprep
+    tool = (body().get("tool") or "").strip()
+    result = dataprep.check_tool(tool)
+    if not result.get("ok"):
+        return api_error(result.get("error") or "检测失败", 400)
+    return jsonify(result)
+
+
+_GUIDE_DOC = Path(__file__).resolve().parent.parent / "docs" / "流水线使用指南.md"
+
+
+def _md_to_html(md: str) -> str:
+    """极简 Markdown → HTML（标题/代码块/行内代码/粗体/表格/列表/链接）。"""
+    import html as _html
+    import re as _re
+
+    lines = md.splitlines()
+    out: list[str] = []
+    in_code = False
+    code_buf: list[str] = []
+    in_table = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            if in_code:
+                out.append("<pre><code>" + "\n".join(code_buf) + "</code></pre>")
+                code_buf = []
+                in_code = False
+            else:
+                if in_table:
+                    out.append("</tbody></table>")
+                    in_table = False
+                in_code = True
+            continue
+        if in_code:
+            code_buf.append(_html.escape(line))
+            continue
+        s = line.rstrip()
+        if s.startswith("|") and s.endswith("|"):
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if all(_re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                continue
+            if not in_table:
+                out.append('<table class="result-table"><thead><tr>'
+                           + "".join(f"<th>{c}</th>" for c in cells) + "</tr></thead><tbody>")
+                in_table = True
+            else:
+                out.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+            continue
+        if in_table:
+            out.append("</tbody></table>")
+            in_table = False
+        e = _html.escape(s)
+        e = _re.sub(r"`([^`]+)`", r"<code>\1</code>", e)
+        e = _re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", e)
+        e = _re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', e)
+        if _re.fullmatch(r"#{1,2} .*", s):
+            out.append(f"<h2>{e.lstrip('# ')}</h2>")
+        elif _re.fullmatch(r"#{3,} .*", s):
+            out.append(f"<h3>{e.lstrip('# ')}</h3>")
+        elif s.startswith("- "):
+            out.append(f"<li>{e[2:]}</li>")
+        elif not s:
+            out.append("")
+        else:
+            out.append(f"<p>{e}</p>")
+    if in_code:
+        out.append("<pre><code>" + "\n".join(code_buf) + "</code></pre>")
+    if in_table:
+        out.append("</tbody></table>")
+    return "\n".join(out)
+
+
+@app.get("/guide/pipeline")
+def guide_pipeline() -> Response:
+    try:
+        md = _GUIDE_DOC.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        return Response(f"<pre>指南文件缺失：{exc}</pre>", mimetype="text/html")
+    body = _md_to_html(md)
+    page = (
+        '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+        "<title>流水线使用指南 · MHC 预测工作台</title>"
+        "<style>body{font:14px/1.7 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;"
+        "max-width:880px;margin:24px auto;padding:0 20px;color:#1f2937}"
+        "h2{border-bottom:1px solid #e5e7eb;padding-bottom:6px;margin-top:28px}"
+        "pre{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:12px;overflow:auto}"
+        "code{background:#eef2f7;padding:1px 5px;border-radius:4px;font-family:Consolas,monospace}"
+        "pre code{background:none;padding:0}table{border-collapse:collapse;width:100%}"
+        "td,th{border:1px solid #e5e7eb;padding:6px 10px;text-align:left}th{background:#f6f8fa}"
+        "a{color:#1d4ed8}li{margin:3px 0}</style></head><body>"
+        + body + "</body></html>"
+    )
+    return Response(page, mimetype="text/html")
+
+
 # ---------------------------------------------------------------- 静态页
 
 

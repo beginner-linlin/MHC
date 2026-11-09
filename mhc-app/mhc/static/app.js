@@ -64,6 +64,12 @@ const MODES = {
     needAllele: false,
     isAgent: true,
   },
+  dataprep: {
+    title: '数据准备',
+    desc: '设计书十步路线（①数据获取 → ⑥新抗原预测）的上游工具安装状态、TCGA-PAAD 数据获取指引与本地流水线脚本。',
+    needAllele: false,
+    isDataprep: true,
+  },
 };
 
 const SAMPLES = {
@@ -220,6 +226,17 @@ function setMode(mode) {
   if (isAgent) {
     agentEnsureSession();
     agentLoadCfg();
+    return;
+  }
+
+  // 数据准备：同样整块替换
+  const isDataprep = !!cfg.isDataprep;
+  $('dataprepPanel').hidden = !isDataprep;
+  document.querySelector('.panel-input').style.display = isDataprep ? 'none' : '';
+  document.querySelector('.panel-result').style.display = isDataprep ? 'none' : '';
+  document.querySelector('.layout').classList.toggle('dp-layout', isDataprep);
+  if (isDataprep) {
+    loadDataPrep();
     return;
   }
 
@@ -2112,10 +2129,205 @@ document.addEventListener('DOMContentLoaded', function agentBind() {
   });
 });
 
+/* ============================================================
+   数据准备（设计书①→⑥上游工具 / TCGA 数据 / 本地流水线）
+   ============================================================ */
+
+let dpLoaded = false;
+let dpGuideData = null;
+
+const DP_STEP_LABEL = { 1: '① 数据获取', 2: '② 质控比对', 3: '③ 突变检出', 4: '④ 表达定量', 5: '⑤ HLA 分型', 6: '⑥ 新抗原' };
+
+function dpEscape(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function dpStepBadge(step) {
+  const n = Number(step);
+  const label = DP_STEP_LABEL[n] || ('步骤 ' + dpEscape(step));
+  return '<span class="dp-step-badge">' + label + '</span>';
+}
+
+function dpStatusBadge(installed, note) {
+  if (installed) return '<span class="dp-badge ok">✅ 已安装</span>';
+  return '<span class="dp-badge missing">⬜ 未安装</span>';
+}
+
+async function loadDataPrep(force) {
+  if (dpLoaded && !force) return;
+  dpLoaded = true;
+  const route = document.getElementById('dpRoute');
+  if (route && !route.dataset.done) route.innerHTML = '<div class="dp-loading">正在加载…</div>';
+  let tools = null;
+  let guide = null;
+  try {
+    tools = await fetch('/api/dataprep/tools').then((r) => r.json());
+  } catch (e) {
+    if (route) route.innerHTML = '<div class="dp-loading err">工具清单加载失败：' + dpEscape(e.message) + '</div>';
+  }
+  try {
+    guide = await fetch('/api/dataprep/guide').then((r) => r.json());
+    dpGuideData = guide;
+  } catch (e) { /* guide 失败时保留空容器 */ }
+
+  if (guide) {
+    renderDpRoute(guide);
+    renderDpGuideBoxes(guide);
+    fillDpCheckSelect(guide);
+  }
+  if (tools) renderDpTools(tools);
+}
+
+function renderDpRoute(guide) {
+  const route = document.getElementById('dpRoute');
+  if (!route || !Array.isArray(guide.route_steps)) return;
+  route.dataset.done = '1';
+  route.innerHTML = guide.route_steps.map((s) =>
+    '<div class="dp-step' + (String(s.by_workbench || '').includes('内嵌') ? ' core' : '') + '">'
+    + '<span class="dp-no">' + dpEscape(s.no) + '</span>'
+    + '<span class="dp-name">' + dpEscape(s.name) + '</span>'
+    + '<span class="dp-desc">' + dpEscape(s.desc) + '</span>'
+    + '<span class="dp-tools">' + dpEscape(s.tools || '') + '</span>'
+    + '<span class="dp-by">' + dpEscape(s.by_workbench || '') + '</span>'
+    + '</div>'
+  ).join('');
+}
+
+function renderDpTools(inv) {
+  const tb = document.getElementById('dpToolsTbody');
+  const table = document.getElementById('dpToolsTable');
+  const empty = document.getElementById('dpToolsEmpty');
+  if (!tb) return;
+  const names = Object.keys((inv && inv.tools) || {});
+  if (!names.length) {
+    if (table) table.hidden = true;
+    if (empty) empty.hidden = false;
+    return;
+  }
+  if (empty) empty.hidden = true;
+  if (table) table.hidden = false;
+  tb.innerHTML = names.map((name) => {
+    const t = inv.tools[name];
+    const cn = t.cn || name;
+    return '<tr>'
+      + '<td><b>' + dpEscape(cn) + '</b> <code class="dp-code">' + dpEscape(name) + '</code></td>'
+      + '<td>' + dpStepBadge(t.step) + '</td>'
+      + '<td class="dp-ver" title="' + dpEscape(t.version || '') + '">' + dpEscape(t.version || '—') + '</td>'
+      + '<td>' + dpEscape(t.source || '') + '</td>'
+      + '<td class="dp-path" title="' + dpEscape(t.path || '') + '">' + dpEscape(t.path || '—') + '</td>'
+      + '<td>' + dpStatusBadge(t.installed, t.note) + '</td>'
+      + '<td><button class="btn btn-ghost btn-sm dp-check-btn" data-tool="' + dpEscape(name) + '">检测</button></td>'
+      + '</tr>';
+  }).join('');
+  tb.querySelectorAll('.dp-check-btn').forEach((btn) => {
+    btn.onclick = () => dpRunCheck(btn.dataset.tool);
+  });
+  const ts = document.getElementById('dpToolSummary');
+  const cnt = names.filter((n) => inv.tools[n].installed).length;
+  if (ts) ts.textContent = '已安装 ' + cnt + ' / ' + names.length;
+}
+
+function fillDpCheckSelect(guide) {
+  const sel = document.getElementById('dpCheckTool');
+  if (!sel || !guide || !guide.route_steps) return;
+  if (sel.options.length) return;
+  const names = ['fastqc', 'trimmomatic', 'bwa', 'samtools', 'bcftools', 'gatk', 'strelka2', 'vep', 'snpEff', 'STAR', 'rsem', 'bowtie2', 'razers3', 'optitype'];
+  sel.innerHTML = names.map((n) => '<option value="' + n + '">' + dpEscape(n) + '</option>').join('');
+}
+
+async function dpRunCheck(tool) {
+  const out = document.getElementById('dpCheckOut');
+  if (!out) return;
+  out.textContent = '检测中…';
+  out.classList.remove('ok', 'err');
+  try {
+    const r = await fetch('/api/dataprep/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool }),
+    });
+    const d = await r.json();
+    if (d.ok === false && d.error) {
+      out.textContent = '❌ ' + d.error;
+      out.classList.add('err');
+      return;
+    }
+    if (d.installed) {
+      out.textContent = '✅ ' + tool + ' 已安装' + (d.version ? '：' + d.version : '');
+      out.classList.add('ok');
+    } else {
+      out.textContent = '⬜ ' + tool + (d.note ? '：' + d.note : ' 未安装');
+      out.classList.add('err');
+    }
+    // 同步刷新清单里该行状态
+    loadDataPrep(true);
+  } catch (e) {
+    out.textContent = '❌ ' + e.message;
+    out.classList.add('err');
+  }
+}
+
+function renderDpGuideBoxes(guide) {
+  const tcga = document.getElementById('dpTcga');
+  const ref = document.getElementById('dpRef');
+  const pipe = document.getElementById('dpPipe');
+  if (tcga && guide.tcga) {
+    const t = guide.tcga;
+    tcga.innerHTML =
+      '<div class="dp-guide-item"><b>项目：</b>' + dpEscape(t.project || '') + '</div>'
+      + '<div class="dp-guide-item"><b>GDC 门户：</b><a href="' + dpEscape(t.portal || '') + '" target="_blank" rel="noopener">' + dpEscape(t.portal || '') + '</a>'
+      + ' · <b>ICGC：</b><a href="' + dpEscape(t.icgc || '') + '" target="_blank" rel="noopener">PACA-AU</a>'
+      + ' · <b>gdc-client：</b><a href="' + dpEscape(t.gdc_client || '') + '" target="_blank" rel="noopener">下载客户端</a></div>'
+      + '<ol class="dp-ol">' + (t.steps || []).map((s) => '<li>' + dpEscape(s) + '</li>').join('') + '</ol>'
+      + (t.note ? '<div class="dp-note">💡 ' + dpEscape(t.note) + '</div>' : '');
+  }
+  if (ref && guide.reference) {
+    const r = guide.reference;
+    ref.innerHTML =
+      '<div class="dp-guide-item"><b>参考基因组：</b>' + dpEscape(r.assembly || '') + '</div>'
+      + '<div class="dp-guide-item"><b>一键准备：</b><code class="dp-code dp-copy" data-cmd="' + dpEscape(r.download || '') + '">' + dpEscape(r.download || '') + ' 📋</code></div>'
+      + '<div class="dp-guide-item"><b>含 STAR 索引（表达定量用，需大内存）：</b><code class="dp-code dp-copy" data-cmd="' + dpEscape(r.star_index || '') + '">' + dpEscape(r.star_index || '') + ' 📋</code></div>'
+      + '<div class="dp-guide-item"><b>GTF 注释：</b><a href="' + dpEscape(r.gtf || '') + '" target="_blank" rel="noopener">' + dpEscape(r.gtf || '') + '</a></div>'
+      + (r.note ? '<div class="dp-note">💡 ' + dpEscape(r.note) + '</div>' : '');
+  }
+  if (pipe && Array.isArray(guide.pipeline_scripts)) {
+    pipe.innerHTML =
+      '<div class="dp-guide-item"><b>脚本目录：</b><code class="dp-code">' + dpEscape(guide.pipeline_dir || '/opt/bio/app/pipeline') + '</code></div>'
+      + '<table class="result-table dp-pipe-table"><thead><tr><th>脚本</th><th>步骤</th><th>说明</th></tr></thead><tbody>'
+      + guide.pipeline_scripts.map((s) =>
+        '<tr><td><code class="dp-code">' + dpEscape(s.file) + '</code></td><td>' + dpEscape(s.step) + '</td><td>' + dpEscape(s.desc) + '</td></tr>'
+      ).join('')
+      + '</tbody></table>'
+      + '<div class="dp-guide-item"><b>总控示例：</b><code class="dp-code dp-copy" data-cmd="bash /opt/bio/app/pipeline/run_all.sh --fastq tumor_R1.fq.gz --normal-fastq normal_R1.fq.gz --alleles HLA-A02:01,HLA-B07:02">bash /opt/bio/app/pipeline/run_all.sh --fastq … --alleles … 📋</code>'
+      + '<a class="dp-doc-link" href="/guide/pipeline" target="_blank" rel="noopener">查看《流水线使用指南》→</a></div>';
+    pipe.querySelectorAll('.dp-copy').forEach((el) => {
+      el.onclick = () => {
+        const cmd = el.dataset.cmd || '';
+        if (navigator.clipboard) navigator.clipboard.writeText(cmd).then(() => toast('已复制到剪贴板', 'ok'));
+        else toast('复制失败：浏览器不支持剪贴板', 'err');
+      };
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function dataprepBind() {
+  const refresh = document.getElementById('btnDpRefresh');
+  if (refresh) refresh.onclick = () => { dpLoaded = false; loadDataPrep(true); };
+  const chk = document.getElementById('btnDpCheck');
+  if (chk) chk.onclick = () => {
+    const sel = document.getElementById('dpCheckTool');
+    if (sel && sel.value) dpRunCheck(sel.value);
+  };
+});
+
 async function init() {
   bindEvents();
   setupAlleleSearch();
-  setMode('pan');
+  // 支持 ?mode= 深链接（如 ?mode=dataprep 直达数据准备面板）
+  const urlMode = new URLSearchParams(location.search).get('mode');
+  setMode(MODES[urlMode] ? urlMode : 'pan');
   renderAlleles();
 
   await checkHealth();
