@@ -60,7 +60,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.nav-item', { timeout: 25000 });
   const navCount = await page.locator('.nav-item').count();
-  ok('侧栏 8 个模式', navCount === 8, navCount + ' 个');
+  ok('侧栏 9 个模式', navCount === 9, navCount + ' 个');
   const neoNav = page.locator('.nav-item[data-mode="neoantigen"]');
   ok('存在「新抗原一键筛选」入口', (await neoNav.count()) === 1);
 

@@ -1,4 +1,4 @@
-// 新抗原一键筛选（突变 → UniProt → 三步串联）浏览器端到端测试
+﻿// 新抗原一键筛选（突变 → UniProt → 三步串联）浏览器端到端测试
 const { chromium } = require('playwright-core');
 const fs = require('fs');
 const path = require('path');
@@ -36,7 +36,7 @@ async function shot(page, name) {
     await page.goto(URL, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('.nav-item', { timeout: 15000 });
     const navCount = await page.locator('.nav-item').count();
-    ok('侧栏 8 个模式', navCount === 8, `=${navCount}`);
+    ok('侧栏 9 个模式', navCount === 9, `=${navCount}`);
     const navTexts = await page.locator('.nav-item').allTextContents();
     ok('存在「新抗原」入口', navTexts.some((t) => t.includes('新抗原')),
       `=${navTexts.map((t) => t.replace(/\s+/g, ' ').trim()).join(' | ').slice(0, 160)}`);

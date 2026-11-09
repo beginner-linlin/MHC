@@ -66,6 +66,13 @@
           <em>新抗原 · 找出突变产生的新肽</em>
         </span>
       </button>
+      <button class="nav-item" data-mode="neoantigen">
+        <span class="nav-icon">◉</span>
+        <span class="nav-label">
+          <strong>新抗原一键筛选</strong>
+          <em>突变 → UniProt → 三步串联</em>
+        </span>
+      </button>
       <div class="nav-sep"></div>
       <button class="nav-item" data-mode="resources">
         <span class="nav-icon">▤</span>
@@ -184,6 +191,27 @@
           </div>
         </div>
 
+        <!-- 新抗原一键筛选：突变列表 + UniProt 预览 -->
+        <div class="neo-block" id="neoBlock" hidden>
+          <div class="field">
+            <div class="field-head">
+              <label>突变列表（每行一个）</label>
+              <div class="field-actions">
+                <button class="chip" id="btnNeoFromGdc">从 GDC 导入</button>
+                <button class="chip" id="btnNeoSample">填入示例</button>
+              </div>
+            </div>
+            <textarea id="neoMutations" class="seq-area" spellcheck="false"
+              placeholder="KRAS G12D&#10;TP53 R175H&#10;SMAD4 R361C"></textarea>
+            <div class="input-meta">
+              <span id="neoStats">尚未输入突变</span>
+              <span class="grow"></span>
+              <button class="link" id="btnNeoPreview">预览蛋白与候选肽</button>
+            </div>
+          </div>
+          <div class="neo-preview" id="neoPreview" hidden></div>
+        </div>
+
         <!-- HLA 选择 -->
         <div class="field" id="alleleField">
           <div class="field-head">
@@ -283,6 +311,7 @@
           <button class="chip active" data-rtab="gdc">GDC 突变检索</button>
           <button class="chip" data-rtab="iedb">IEDB 云端预测</button>
           <button class="chip" data-rtab="catalog">数据库与工具清单</button>
+          <button class="chip" data-rtab="apikey">对外接入</button>
         </div>
 
         <!-- GDC 突变检索 -->
@@ -389,6 +418,51 @@
           <div class="res-grid" id="resDbGrid"></div>
           <h3 class="res-h">在线工具</h3>
           <div class="res-grid" id="resToolGrid"></div>
+        </div>
+
+        <!-- 对外接入：API 密钥 + /api/v1 工具化端点 -->
+        <div class="res-pane" id="resPaneApikey" hidden>
+          <h3 class="res-h">API 密钥</h3>
+          <p class="res-hint">
+            生成一个密钥交给外部 agent（Claude / Cursor / 自建脚本等），它就能直接调用本工作台的全部工具，
+            不必经过网页界面。密钥只在生成时显示一次，请立即复制保存。
+          </p>
+          <div class="apikey-create">
+            <input type="text" id="tokenName" placeholder="给这个密钥起个名字，例如 我的 Claude" maxlength="60">
+            <button class="btn btn-primary btn-sm" id="btnCreateToken">生成新密钥</button>
+          </div>
+          <div class="apikey-new" id="tokenNewBox" hidden>
+            <div class="apikey-new-row">
+              <strong>新密钥（只显示这一次）</strong>
+              <code id="tokenNewValue"></code>
+              <button class="btn btn-ghost btn-sm" id="btnCopyToken">复制</button>
+            </div>
+          </div>
+          <div class="res-table-wrap">
+            <table class="res-table" id="tokenTable" hidden>
+              <thead>
+                <tr><th>名称</th><th>前缀</th><th>创建时间</th><th>最近使用</th><th>调用次数</th><th>操作</th></tr>
+              </thead>
+              <tbody id="tokenTbody"></tbody>
+            </table>
+          </div>
+          <div class="res-hint" id="tokenEmpty">还没有密钥。生成一个后就能把工作台接进外部 agent。</div>
+
+          <h3 class="res-h">接口速查</h3>
+          <div class="apikey-doc">
+            <div class="apikey-doc-row"><code>GET  /api/v1/ping</code><span>连通性自检，返回版本与工具状态</span></div>
+            <div class="apikey-doc-row"><code>GET  /api/v1/tools</code><span>列出全部可用工具（含 OpenAI function-calling 描述）</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/tools/&lt;name&gt;</code><span>通用调用：body 可直接给参数，也可用 {"args": {...}} 包裹</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/predict/binding</code><span>NetMHCpan 结合预测</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/predict/cleavage</code><span>NetChop 酶切预测</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/predict/stability</code><span>NetMHCstabpan 稳定性预测</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/pipeline</code><span>三步串联流水线</span></div>
+            <div class="apikey-doc-row"><code>POST /api/v1/mutant</code><span>突变肽筛选</span></div>
+          </div>
+          <p class="res-hint">鉴权用请求头 <code>Authorization: Bearer &lt;密钥&gt;</code> 或 <code>X-API-Key: &lt;密钥&gt;</code>。</p>
+
+          <h3 class="res-h">调用示例</h3>
+          <pre class="apikey-code" id="tokenSample">生成密钥后这里会显示可直接复制的 curl 示例。</pre>
         </div>
 
       </div>

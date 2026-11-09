@@ -36,7 +36,7 @@ async function shot(page, name) {
     await page.goto(URL, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('.nav-item', { timeout: 15000 });
     const navCount = await page.locator('.nav-item').count();
-    ok('侧栏 8 个模式', navCount === 8, `=${navCount}`);
+    ok('侧栏 9 个模式', navCount === 9, `=${navCount}`);
     const hasRes = await page.locator('.nav-item[data-mode="resources"]').count();
     ok('存在「数据库与工具」入口', hasRes === 1);
     await shot(page, 'r01_home');
