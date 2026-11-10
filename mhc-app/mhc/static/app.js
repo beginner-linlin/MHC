@@ -1545,6 +1545,9 @@ const resState = {
   gdcRows: [],
   iedbRows: [],
   loading: false,
+  // 导出要按「同一次检索的条件」重新取全量，不能只导前端这 500 行
+  gdcFilters: null,
+  iedbParams: null,
 };
 
 async function loadResourceCatalog(force = false) {
@@ -1669,7 +1672,9 @@ async function searchGdc() {
       body: JSON.stringify({ project, gene, chromosome: chrom, mutation_type: mutType, size: 500 }),
     });
     resState.gdcRows = d.rows || [];
+    resState.gdcFilters = { project, gene, chromosome: chrom, mutation_type: mutType };
     renderGdcTable();
+    setResActions('gdc', resState.gdcRows.length > 0);
     const bits = [`<strong>${d.total}</strong> 条突变（返回 ${d.returned} 条）`];
     if (gene) bits.push(`基因 <strong>${gene.toUpperCase()}</strong>`);
     if (chrom) bits.push(`染色体 <strong>${chrom}</strong>`);
@@ -1681,6 +1686,7 @@ async function searchGdc() {
   } catch (e) {
     meta.textContent = '查询失败：' + e.message;
     toast(e.message, 'err');
+    setResActions('gdc', false);
   } finally {
     $('btnGdcSearch').disabled = false;
   }
@@ -1751,7 +1757,9 @@ async function runIedb() {
       body: JSON.stringify({ mhc_class: cls, method, input, alleles, length }),
     });
     resState.iedbRows = d.rows || [];
+    resState.iedbParams = { mhc_class: cls, method, input, alleles, length };
     renderIedbTable();
+    setResActions('iedb', resState.iedbRows.length > 0);
     meta.innerHTML = `IEDB <strong>${d.method}</strong> · ${d.peptides} 条肽 × ${d.alleles.length} 个等位基因 · <strong>${d.count}</strong> 行结果`;
     if (d.errors && d.errors.length) {
       meta.innerHTML += ' · 部分失败：' + d.errors.join('; ');
@@ -1759,6 +1767,7 @@ async function runIedb() {
   } catch (e) {
     meta.textContent = 'IEDB 调用失败：' + e.message;
     toast(e.message, 'err');
+    setResActions('iedb', false);
   } finally {
     $('btnIedbRun').disabled = false;
     $('iedbSpinner').hidden = true;
@@ -2079,12 +2088,82 @@ function renderSample(token) {
     `curl -s -X POST ${U}/api/v1/tools/predict_binding -H "${AUTH}" -H "${JSON_H}" -d '${body2}'`,
   ].join('\n');
 }
+// ─────────────── 数据库检索结果导出（GDC / IEDB） ───────────────
+//
+// 两个面板的结果是外部接口现查现得的，不走 /api/jobs/* 那套任务导出，
+// 所以单独 POST 到 /api/resources/{gdc,iedb}/export 拿 Blob 再触发下载。
+// 后端会按提交的条件重新检索全量（前端表格只显示前 500 行）。
+
+function setResActions(kind, show) {
+  const box = $(kind === 'gdc' ? 'gdcActions' : 'iedbActions');
+  if (box) box.hidden = !show;
+}
+
+async function exportResource(kind, fmt) {
+  const isGdc = kind === 'gdc';
+  const payload = isGdc ? resState.gdcFilters : resState.iedbParams;
+  if (!payload) {
+    toast(isGdc ? '请先检索突变' : '请先运行一次 IEDB 预测', 'err');
+    return;
+  }
+  const btns = isGdc
+    ? [$('btnGdcExportCsv'), $('btnGdcExportXlsx')]
+    : [$('btnIedbExportCsv'), $('btnIedbExportXlsx')];
+  btns.forEach((b) => { if (b) b.disabled = true; });
+  const label = isGdc ? 'GDC 检索结果' : 'IEDB 预测结果';
+  toast(`正在生成 ${label} ${fmt.toUpperCase()}…`);
+  try {
+    const res = await fetch(`/api/resources/${kind}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, format: fmt }),
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        msg = j.error || j.message || msg;
+      } catch (_) { /* 非 JSON 错误体，保留状态码 */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    // 文件名优先用后端 Content-Disposition 里的，退化为本地拼一个
+    let name = `${label}_${new Date().toISOString().slice(0, 10)}.${fmt}`;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+    if (m && m[1]) {
+      try { name = decodeURIComponent(m[1]); } catch (_) { name = m[1]; }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast(`已下载 ${name}`);
+  } catch (e) {
+    toast('导出失败：' + e.message, 'err');
+  } finally {
+    btns.forEach((b) => { if (b) b.disabled = false; });
+  }
+}
+
 function bindResourceEvents() {
   document.querySelectorAll('.res-tabs .chip').forEach((b) => {
     b.onclick = () => switchResTab(b.dataset.rtab);
   });
   $('btnGdcSearch').onclick = searchGdc;
   $('gdcGene').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGdc(); });
+  const gcs = $('btnGdcExportCsv');
+  const gxs = $('btnGdcExportXlsx');
+  if (gcs) gcs.onclick = () => exportResource('gdc', 'csv');
+  if (gxs) gxs.onclick = () => exportResource('gdc', 'xlsx');
+  const ics = $('btnIedbExportCsv');
+  const ixs = $('btnIedbExportXlsx');
+  if (ics) ics.onclick = () => exportResource('iedb', 'csv');
+  if (ixs) ixs.onclick = () => exportResource('iedb', 'xlsx');
   $('btnIedbRun').onclick = runIedb;
   $('btnIedbSample').onclick = () => {
     $('iedbInput').value = SAMPLES.pep;

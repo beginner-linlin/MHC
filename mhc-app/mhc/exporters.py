@@ -128,6 +128,80 @@ ALIGN_COLUMNS = [
     ("query_aligned", "查询片段", 30),
 ]
 
+GDC_COLUMNS = [
+    ("gene", "基因", 10),
+    ("aa_change", "氨基酸改变", 14),
+    ("consequence_type", "变异类型", 20),
+    ("dna_change", "基因组改变", 28),
+    ("chromosome", "染色体", 9),
+    ("start", "起点", 12),
+    ("end", "终点", 12),
+    ("ref", "参考碱基", 11),
+    ("alt", "突变碱基", 11),
+    ("mutation_type", "突变类型", 22),
+    ("mutation_subtype", "突变亚型", 18),
+    ("build", "参考基因组", 12),
+    ("transcript_id", "转录本", 20),
+    ("ssm_id", "SSM ID", 38),
+]
+
+# IEDB 返回的列随预测方法变化（netmhcpan_el 给 score，netmhcpan_ba 给 ic50，
+# consensus 给一大堆子方法列），所以列定义只能从返回行动态推导，这里只负责中文化。
+IEDB_LABELS = {
+    "allele": "HLA",
+    "peptide": "肽段",
+    "seq_num": "序号",
+    "start": "起点",
+    "end": "终点",
+    "length": "长度",
+    "core_peptide": "核心肽",
+    "core": "核心肽",
+    "icore": "核心肽(内含)",
+    "ic50": "IC50 nM",
+    "score": "得分",
+    "rank": "排名%",
+    "percentile_rank": "百分位排名%",
+    "adjusted_rank": "校正排名%",
+    "ann_ic50": "ANN IC50",
+    "ann_rank": "ANN 排名%",
+    "smm_ic50": "SMM IC50",
+    "smm_rank": "SMM 排名%",
+    "smmpmbec_ic50": "SMMPMBEC IC50",
+    "smmpmbec_rank": "SMMPMBEC 排名%",
+    "comblib_sidney2008_score": "Comblib 得分",
+    "comblib_sidney2008_rank": "Comblib 排名%",
+    "consensus_percentile_rank": "Consensus 百分位%",
+    "netmhcpan_ic50": "NetMHCpan IC50",
+    "netmhcpan_rank": "NetMHCpan 排名%",
+    "netmhcpan_exp": "NetMHCpan 实验值",
+    "n_binders": "结合数",
+    "project": "项目",
+}
+
+
+def dynamic_columns(
+    rows: Sequence[dict],
+    labels: dict[str, str] | None = None,
+) -> list[tuple[str, str, int]]:
+    """从返回行的键推导列定义（中文标签缺失时回退原键名）。
+
+    跳过以下划线开头的内部键——前端渲染表格时也做了同样的过滤。
+    """
+    if not rows:
+        return []
+    labels = labels or {}
+    out: list[tuple[str, str, int]] = []
+    seen = set()
+    for row in rows[:1]:
+        for key in row.keys():
+            if str(key).startswith("_") or key in seen:
+                continue
+            seen.add(key)
+            label = labels.get(str(key), str(key))
+            width = max(10, min(28, len(label) * 2 + 6))
+            out.append((str(key), label, width))
+    return out
+
 HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
 BORDER = Border(*[Side(style="thin", color="D0D7DE")] * 4)
@@ -230,8 +304,14 @@ def export_rows(
     fmt: str,
     *,
     meta: dict[str, Any] | None = None,
+    columns: Sequence[tuple[str, str, int]] | None = None,
+    label: str | None = None,
 ) -> tuple[bytes, str, str]:
-    """返回 (字节, 文件名, MIME)。"""
+    """返回 (字节, 文件名, MIME)。
+
+    `columns` / `label` 显式给出时优先使用——IEDB 这类外部接口的列随预测方法
+    变化，只能从返回行动态推导，不能在模块级写死。
+    """
     table = {
         "pan": ("NetMHCpan结果", PAN_COLUMNS),
         "chop": ("NetChop结果", CHOP_COLUMNS),
@@ -240,8 +320,19 @@ def export_rows(
         "mutant": ("突变肽筛选结果", MUT_COLUMNS),
         "neoantigen": ("新抗原候选肽", NEO_COLUMNS),
         "align": ("序列比对结果", ALIGN_COLUMNS),
+        "gdc": ("GDC突变检索", GDC_COLUMNS),
+        "iedb": ("IEDB预测结果", None),  # 列随方法变化，运行时推导
     }
-    label, columns = table.get(kind, ("结果", PAN_COLUMNS))
+    tbl_label, tbl_cols = table.get(kind, ("结果", PAN_COLUMNS))
+    label = label or tbl_label
+    if columns is not None:
+        columns = list(columns)
+    elif tbl_cols is None:
+        columns = dynamic_columns(rows, IEDB_LABELS)
+    else:
+        columns = list(tbl_cols)
+    if not columns:
+        columns = list(PAN_COLUMNS)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if fmt == "xlsx":
         data = to_xlsx(rows, columns, sheet_name=label, meta=meta)

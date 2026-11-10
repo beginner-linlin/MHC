@@ -1143,6 +1143,20 @@ input[type="text"]:focus, select:focus {
   border-radius: 8px;
 }
 
+/* 检索结果导出按钮组（GDC / IEDB 面板） */
+.res-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0 8px;
+}
+.res-actions-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.res-actions .btn[disabled] { opacity: .55; cursor: not-allowed; }
+
 .res-hint {
   font-size: 12.5px;
   line-height: 1.7;

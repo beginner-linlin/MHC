@@ -19,9 +19,16 @@ is_running() {
   pid=$(cat "$PID_FILE" 2>/dev/null)
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  # 确认确实是我们的进程，而不是 PID 被复用
-  grep -qa "serve.py" "/proc/$pid/cmdline" 2>/dev/null || return 1
-  return 0
+  # 确认确实是我们的进程，而不是 PID 被复用。
+  # 注意 nohup exec 成 python 有几十毫秒延迟，这期间 cmdline 还是 nohup 的，
+  # 所以两种都认——否则刚启动就会被误判成「进程已死」。
+  if grep -qa "serve.py" "/proc/$pid/cmdline" 2>/dev/null; then
+    return 0
+  fi
+  if grep -qa "nohup" "/proc/$pid/cmdline" 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
 port_busy() {
@@ -83,13 +90,15 @@ do_start() {
   export PYTHONDONTWRITEBYTECODE=1
   nohup "$VENV_PY" "$APP_DIR/serve.py" >>"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
-  # 等待端口就绪，最多 20 秒
-  for _ in $(seq 1 100); do
+  # 等待端口就绪，最多 20 秒。
+  # 前 10 轮（约 2 秒）不判 is_running 失败——python 启动 + Flask 绑定端口
+  # 需要时间，过早判定会把成功启动误报成失败，还会把 pid 文件删掉。
+  for i in $(seq 1 100); do
     if port_busy; then
       echo "后端已启动 (pid $(cat "$PID_FILE")) → http://$HOST:$PORT"
       return 0
     fi
-    if ! is_running; then
+    if [ "$i" -gt 10 ] && ! is_running; then
       echo "启动失败，最后 20 行日志："
       tail -20 "$LOG_FILE"
       rm -f "$PID_FILE"
@@ -141,11 +150,18 @@ do_stop() {
 do_status() {
   if is_running; then
     echo "RUNNING pid=$(cat "$PID_FILE") port=$PORT"
-    exit 0
-  else
-    echo "STOPPED port=$PORT"
-    exit 3
+    return 0
   fi
+  # pid 文件可能丢了但进程还活着（例如启动竞态时被删）——用端口兜底
+  local p
+  p=$(port_pid)
+  if [ -n "$p" ] && is_our_serve "$p"; then
+    echo "$p" >"$PID_FILE"
+    echo "RUNNING pid=$p port=$PORT（pid 文件已回填）"
+    return 0
+  fi
+  echo "STOPPED port=$PORT"
+  return 3
 }
 
 case "${1:-start}" in

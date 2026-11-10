@@ -267,6 +267,145 @@ def iedb_predict() -> Response:
     )
 
 
+# ---------------------------------------------------------------- 检索结果导出
+#
+# GDC / IEDB 的筛选条件放不进 URL（基因名可能为空、IEDB 还要带肽段列表），
+# 所以导出走 POST + fetch(blob)。两个路由都按**当前条件重新检索全量**再导出，
+# 而不是导出前端那 200 行——用户点导出时期望拿到的是完整结果集。
+
+GDC_EXPORT_MAX = 2000
+
+
+def _export_response(data: bytes, filename: str, mime: str) -> Response:
+    """统一落盘 + 下发，与 /api/jobs/<id>/export 保持同一套行为。"""
+    try:
+        (EXPORT_DIR / filename).write_bytes(data)
+    except OSError:
+        pass  # 落盘失败不影响下载
+    # Flask 会给 mimetype 补一次 charset，exporters 返回的已含 charset，
+    # 直接用会出现 "text/csv; charset=utf-8; charset=utf-8"
+    return send_file(
+        io.BytesIO(data),
+        mimetype=mime.split(";")[0].strip(),
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.post("/api/resources/gdc/export")
+def gdc_export() -> Response:
+    """把 GDC 突变检索结果导出为 CSV / xlsx（按当前条件重新取全量）。"""
+    payload = body()
+    fmt = (payload.get("format") or "csv").lower()
+    if fmt not in ("csv", "xlsx"):
+        return api_error("导出格式只支持 csv 或 xlsx。")
+    raw_project = payload.get("project")
+    project = (raw_project if raw_project is not None else "TCGA-PAAD").strip()
+    gene = (payload.get("gene") or "").strip() or None
+    chromosome = (payload.get("chromosome") or "").strip() or None
+    mutation_type = (payload.get("mutation_type") or "").strip() or None
+    if not gene and not chromosome and not project:
+        return api_error("请至少指定项目、基因或染色体之一。")
+    try:
+        result = resources_mod.search_gdc_mutations(
+            project=project,
+            gene=gene,
+            chromosome=chromosome,
+            mutation_type=mutation_type,
+            size=GDC_EXPORT_MAX,
+            offset=0,
+        )
+    except resources_mod.ResourceError as exc:
+        return api_error(exc.message, exc.status, detail=exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"GDC 查询失败：{exc}", 502)
+
+    rows = result.get("rows") or []
+    if not rows:
+        return api_error("当前条件没有检索到突变，无法导出。")
+    meta = {
+        "项目": project or "全部",
+        "基因": gene or "全部",
+        "染色体": chromosome or "全部",
+        "突变类型": mutation_type or "全部",
+        "结果行数": len(rows),
+        "GDC 命中总数": result.get("total"),
+    }
+    data, filename, mime = exporters.export_rows(
+        rows,
+        "gdc",
+        fmt,
+        meta=meta,
+        label="GDC突变检索",
+    )
+    return _export_response(data, filename, mime)
+
+
+@app.post("/api/resources/iedb/export")
+def iedb_export() -> Response:
+    """把 IEDB 云端预测结果导出为 CSV / xlsx（按当前条件重新预测）。"""
+    payload = body()
+    fmt = (payload.get("format") or "csv").lower()
+    if fmt not in ("csv", "xlsx"):
+        return api_error("导出格式只支持 csv 或 xlsx。")
+
+    peptides = parse_peptide_list(payload.get("input") or "")
+    if not peptides:
+        return api_error("没有识别到肽段，无法导出。")
+    alleles = [str(a).strip().upper() for a in (payload.get("alleles") or []) if str(a).strip()]
+    if not alleles:
+        return api_error("请至少选择一个 HLA 等位基因。")
+    if len(alleles) > 5:
+        return api_error("IEDB 一次最多 5 个等位基因，请分批导出。")
+    if len(peptides) > 500:
+        return api_error("IEDB 一次最多 500 条肽，请分批导出。")
+
+    mhc_class = (payload.get("mhc_class") or "I").upper().lstrip("MHC-")
+    method = payload.get("method") or ("netmhcpan_el" if mhc_class == "I" else "recommended")
+    try:
+        length = int(payload.get("length") or (9 if mhc_class == "I" else 15))
+    except (TypeError, ValueError):
+        length = 9 if mhc_class == "I" else 15
+
+    all_rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for allele in alleles:
+        try:
+            res = resources_mod.iedb_predict(
+                mhc_class=mhc_class,
+                method=method,
+                peptides=peptides,
+                allele=allele,
+                length=length,
+            )
+            for r in res["rows"]:
+                r["_allele"] = allele
+                r["_method"] = method
+            all_rows.extend(res["rows"])
+        except resources_mod.ResourceError as exc:
+            errors.append(f"{allele}: {exc.message}")
+    if not all_rows:
+        return api_error("IEDB 预测失败", 502, detail="; ".join(errors))
+
+    meta = {
+        "MHC 类别": "I 类" if mhc_class == "I" else "II 类",
+        "预测方法": method,
+        "等位基因": ", ".join(alleles),
+        "肽段数": len(peptides),
+        "结果行数": len(all_rows),
+    }
+    if errors:
+        meta["部分失败"] = "; ".join(errors)
+    data, filename, mime = exporters.export_rows(
+        all_rows,
+        "iedb",
+        fmt,
+        meta=meta,
+        label="IEDB预测结果",
+    )
+    return _export_response(data, filename, mime)
+
+
 # ---------------------------------------------------------------- UniProt 取序列
 
 
