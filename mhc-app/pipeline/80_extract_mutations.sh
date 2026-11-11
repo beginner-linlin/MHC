@@ -15,7 +15,7 @@ command -v bcftools >/dev/null 2>&1 || die "缺少 bcftools: sudo apt-get instal
 command -v python3  >/dev/null 2>&1 || die "缺少 python3"
 mkdir -p "$OUT"
 
-log "提取错义突变（识别 snpEff ANN 与 VEP CSQ 两种注释格式）…"
+log "提取错义突变（识别 snpEff ANN / VEP CSQ / TCGA MAF / GDC 突变检索 CSV）…"
 if head -c 4096 "$VCF" | grep -qE "Hugo_Symbol|Tumor_Seq_Allele2|Variant_Classification"; then
   # ---- MAF 格式直读（TCGA/ICGC 现成注释 MAF，免 snpEff/VEP）----
   log "检测到 MAF 格式（Hugo_Symbol/Tumor_Seq_Allele2 表头），直接解析，免注释…"
@@ -59,6 +59,30 @@ with op(src, "rt", encoding="utf-8", errors="replace") as fh, open(dst, "w") as 
                              d.get("Reference_Allele", ""), d.get("Tumor_Seq_Allele2", ""), info]) + "\n")
         n += 1
 print(f"[80] MAF 解析完成: {n} 行错义 → {dst}")
+PYEOF
+elif head -c 4096 "$VCF" | grep -q "基因,氨基酸改变"; then
+  # ---- 工作台「GDC 突变检索」导出 CSV（中文表头），免注释直读 ----
+  log "检测到 GDC 突变检索 CSV（基因/氨基酸改变 表头），直接解析，免注释…"
+  python3 - "$VCF" "$OUT/all_variants.tsv" <<'PYEOF'
+import sys, csv
+src, dst = sys.argv[1], sys.argv[2]
+n = 0
+with open(src, encoding="utf-8-sig", errors="replace") as fh, open(dst, "w") as out:
+    for d in csv.DictReader(fh):
+        vt = (d.get("变异类型") or "")
+        if "missense" not in vt:
+            continue
+        gene = (d.get("基因") or "").strip()
+        aa = (d.get("氨基酸改变") or "").strip()
+        if not gene or not aa:
+            continue
+        hgvsp = aa if aa.startswith("p.") else "p." + aa
+        info = "ANN=M|missense_variant||%s||||||%s|" % (gene, hgvsp)
+        chrom = (d.get("染色体") or "0").replace("chr", "")
+        out.write("\t".join([chrom, d.get("起点", "0"),
+                             d.get("参考碱基", ""), d.get("突变碱基", ""), info]) + "\n")
+        n += 1
+print(f"[80] GDC CSV 解析完成: {n} 行错义 → {dst}")
 PYEOF
 else
   bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO\n' "$VCF" > "$OUT/all_variants.tsv"

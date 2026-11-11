@@ -131,6 +131,14 @@ cd /tmp
     fi
     RAW="$WORK/raw"
     mkdir -p "$RAW"
+    # 校验 manifest：GDC 官方 manifest 是 TSV，必须有 id 列
+    if ! head -1 "$MANIFEST" | grep -qiE '(^|[\t,])id([\t,]|$)'; then
+      echo "ERROR_MANIFEST: 该文件不是 GDC 官方下载 manifest（表头缺 id 列）"
+      echo "  → 「GDC 突变检索」导出的 CSV 请改用「已注释 MAF-VCF（跳上游）」模式：第 8 步可直接解析"
+      echo "  → 官方下载 manifest 从 GDC 官网 Cart 下载，文件名形如 gdc_manifest_*.txt"
+      echo "__EXIT__2"
+      exit 2
+    fi
     echo "== gdc-client 下载 manifest → $RAW =="
     "$GDC_BIN" download -d "$RAW" -n 4 -m "$MANIFEST"
     rc=$?
