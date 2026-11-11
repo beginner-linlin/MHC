@@ -325,9 +325,17 @@
               <tbody id="gdcTbody"></tbody>
             </table>
           </div>
+          <div class="gdc-export-row" id="gdcExportRow" hidden>
+            <span class="gdc-export-label">导出到：</span>
+            <button class="btn btn-ghost btn-sm" id="btnGdcToMutant" title="自动取 UniProt 野生型序列，直接进入突变肽筛选">突变肽筛选（自动配序列）</button>
+            <button class="btn btn-ghost btn-sm" id="btnGdcVcf" title="合成注释 VCF，流水线「MAF-VCF 模式」第 8 步直接解析">VCF（流水线）</button>
+            <button class="btn btn-ghost btn-sm" id="btnGdcFasta" title="每个突变 ±10aa 的 21-mer 上下文序列">21-mer FASTA</button>
+            <button class="btn btn-ghost btn-sm" id="btnGdcPeptides" title="突变残基居中的 9-mer 肽，可直接粘贴进结合预测/IEDB">9-mer 肽列表</button>
+            <button class="btn btn-ghost btn-sm" id="btnGdcCsv">CSV 报告</button>
+          </div>
           <div class="res-hint">
-            <strong>用法提示：</strong>查到突变后，可把「氨基酸改变」对应的野生型蛋白序列（UniProt）放进
-            「突变肽筛选」模式，即可得到该突变产生的候选新抗原肽。
+            <strong>用法提示：</strong>查到突变后点「突变肽筛选（自动配序列）」一键进入检测；或导出
+            VCF / 21-mer FASTA 给数据准备流水线，9-mer 肽列表直接粘贴进结合预测与 IEDB。
           </div>
         </div>
 

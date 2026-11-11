@@ -14,15 +14,16 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_file
 
 from . import __version__, exporters
-from . import neoantigen as neoantigen_mod
 from . import resources as resources_mod
 from .fileformats import build_pairs, parse_any
 from .jobs import JobStore, Progress, STATUS_DONE, STATUS_FAILED, STATUS_RUNNING
@@ -59,11 +60,6 @@ MAX_BODY = 32 * 1024 * 1024  # 32 MB
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
 app.json.ensure_ascii = False
-
-# 对外接入：API 密钥管理 + /api/v1/* 工具化端点
-from . import tokenapi as tokenapi_mod  # noqa: E402
-
-tokenapi_mod.register_routes(app)
 
 store = JobStore(DB_PATH)
 
@@ -207,6 +203,52 @@ def gdc_mutations() -> Response:
         return api_error(f"GDC 查询失败：{exc}", 502)
 
 
+@app.post("/api/gdc/export")
+def gdc_export() -> Response:
+    """GDC 突变检索 → 导出为流水线与其他检测可用的格式。
+
+    format: vcf（流水线第 8 步）/ fasta21（21-mer 上下文）/ peptides（9-mer 肽列表）
+            / csv（中文报告）/ mutant（JSON：突变肽筛选模式一键导入）
+    重新按当前筛选条件查询 GDC，保证导出内容完整（而非仅前端已渲染的一页）。
+    """
+    payload = body()
+    project = (payload.get("project") or "TCGA-PAAD").strip()
+    gene = (payload.get("gene") or "").strip() or None
+    chromosome = (payload.get("chromosome") or "").strip() or None
+    mutation_type = (payload.get("mutation_type") or "").strip() or None
+    fmt = (payload.get("format") or "").strip().lower()
+    if fmt not in {"csv", "vcf", "fasta21", "peptides", "mutant"}:
+        return api_error("不支持的导出格式，可用：vcf / fasta21 / peptides / csv / mutant", 400)
+    try:
+        size = min(int(payload.get("size") or 500), 1000)
+        result = resources_mod.search_gdc_mutations(
+            project=project, gene=gene, chromosome=chromosome,
+            mutation_type=mutation_type, size=size, offset=0,
+        )
+        rows = result["rows"]
+        if not rows:
+            return api_error("当前检索结果为空，请先查到突变再导出。", 400)
+        name_hint = "GDC突变检索"
+        if gene:
+            name_hint += f"_{gene.upper()}"
+        if fmt == "mutant":
+            data = resources_mod.gdc_export_mutant(rows)
+            data["filters"] = result["filters"]
+            return jsonify({"ok": True, **data})
+        text, filename, mime = resources_mod.gdc_export_file(rows, fmt, name_hint=name_hint)
+        resp = Response(text, mimetype=mime)
+        # HTTP 头只能 latin-1：ASCII 回退名 + RFC 5987 UTF-8 名（现代浏览器取后者，中文可保留）
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "export.txt"
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{urllib.parse.quote(filename)}'
+        )
+        return resp
+    except resources_mod.ResourceError as exc:
+        return api_error(exc.message, exc.status, detail=exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"GDC 导出失败：{exc}", 502)
+
+
 @app.post("/api/iedb/predict")
 def iedb_predict() -> Response:
     """IEDB tools_api 云端 MHC-I/II 预测。"""
@@ -263,239 +305,6 @@ def iedb_predict() -> Response:
             "count": len(all_rows),
             "rows": all_rows,
             "errors": errors,
-        }
-    )
-
-
-# ---------------------------------------------------------------- 检索结果导出
-#
-# GDC / IEDB 的筛选条件放不进 URL（基因名可能为空、IEDB 还要带肽段列表），
-# 所以导出走 POST + fetch(blob)。两个路由都按**当前条件重新检索全量**再导出，
-# 而不是导出前端那 200 行——用户点导出时期望拿到的是完整结果集。
-
-GDC_EXPORT_MAX = 2000
-
-
-def _export_response(data: bytes, filename: str, mime: str) -> Response:
-    """统一落盘 + 下发，与 /api/jobs/<id>/export 保持同一套行为。"""
-    try:
-        (EXPORT_DIR / filename).write_bytes(data)
-    except OSError:
-        pass  # 落盘失败不影响下载
-    # Flask 会给 mimetype 补一次 charset，exporters 返回的已含 charset，
-    # 直接用会出现 "text/csv; charset=utf-8; charset=utf-8"
-    return send_file(
-        io.BytesIO(data),
-        mimetype=mime.split(";")[0].strip(),
-        as_attachment=True,
-        download_name=filename,
-    )
-
-
-@app.post("/api/resources/gdc/export")
-def gdc_export() -> Response:
-    """把 GDC 突变检索结果导出为 CSV / xlsx（按当前条件重新取全量）。"""
-    payload = body()
-    fmt = (payload.get("format") or "csv").lower()
-    if fmt not in ("csv", "xlsx"):
-        return api_error("导出格式只支持 csv 或 xlsx。")
-    raw_project = payload.get("project")
-    project = (raw_project if raw_project is not None else "TCGA-PAAD").strip()
-    gene = (payload.get("gene") or "").strip() or None
-    chromosome = (payload.get("chromosome") or "").strip() or None
-    mutation_type = (payload.get("mutation_type") or "").strip() or None
-    if not gene and not chromosome and not project:
-        return api_error("请至少指定项目、基因或染色体之一。")
-    try:
-        result = resources_mod.search_gdc_mutations(
-            project=project,
-            gene=gene,
-            chromosome=chromosome,
-            mutation_type=mutation_type,
-            size=GDC_EXPORT_MAX,
-            offset=0,
-        )
-    except resources_mod.ResourceError as exc:
-        return api_error(exc.message, exc.status, detail=exc.detail)
-    except Exception as exc:  # noqa: BLE001
-        return api_error(f"GDC 查询失败：{exc}", 502)
-
-    rows = result.get("rows") or []
-    if not rows:
-        return api_error("当前条件没有检索到突变，无法导出。")
-    meta = {
-        "项目": project or "全部",
-        "基因": gene or "全部",
-        "染色体": chromosome or "全部",
-        "突变类型": mutation_type or "全部",
-        "结果行数": len(rows),
-        "GDC 命中总数": result.get("total"),
-    }
-    data, filename, mime = exporters.export_rows(
-        rows,
-        "gdc",
-        fmt,
-        meta=meta,
-        label="GDC突变检索",
-    )
-    return _export_response(data, filename, mime)
-
-
-@app.post("/api/resources/iedb/export")
-def iedb_export() -> Response:
-    """把 IEDB 云端预测结果导出为 CSV / xlsx（按当前条件重新预测）。"""
-    payload = body()
-    fmt = (payload.get("format") or "csv").lower()
-    if fmt not in ("csv", "xlsx"):
-        return api_error("导出格式只支持 csv 或 xlsx。")
-
-    peptides = parse_peptide_list(payload.get("input") or "")
-    if not peptides:
-        return api_error("没有识别到肽段，无法导出。")
-    alleles = [str(a).strip().upper() for a in (payload.get("alleles") or []) if str(a).strip()]
-    if not alleles:
-        return api_error("请至少选择一个 HLA 等位基因。")
-    if len(alleles) > 5:
-        return api_error("IEDB 一次最多 5 个等位基因，请分批导出。")
-    if len(peptides) > 500:
-        return api_error("IEDB 一次最多 500 条肽，请分批导出。")
-
-    mhc_class = (payload.get("mhc_class") or "I").upper().lstrip("MHC-")
-    method = payload.get("method") or ("netmhcpan_el" if mhc_class == "I" else "recommended")
-    try:
-        length = int(payload.get("length") or (9 if mhc_class == "I" else 15))
-    except (TypeError, ValueError):
-        length = 9 if mhc_class == "I" else 15
-
-    all_rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for allele in alleles:
-        try:
-            res = resources_mod.iedb_predict(
-                mhc_class=mhc_class,
-                method=method,
-                peptides=peptides,
-                allele=allele,
-                length=length,
-            )
-            for r in res["rows"]:
-                r["_allele"] = allele
-                r["_method"] = method
-            all_rows.extend(res["rows"])
-        except resources_mod.ResourceError as exc:
-            errors.append(f"{allele}: {exc.message}")
-    if not all_rows:
-        return api_error("IEDB 预测失败", 502, detail="; ".join(errors))
-
-    meta = {
-        "MHC 类别": "I 类" if mhc_class == "I" else "II 类",
-        "预测方法": method,
-        "等位基因": ", ".join(alleles),
-        "肽段数": len(peptides),
-        "结果行数": len(all_rows),
-    }
-    if errors:
-        meta["部分失败"] = "; ".join(errors)
-    data, filename, mime = exporters.export_rows(
-        all_rows,
-        "iedb",
-        fmt,
-        meta=meta,
-        label="IEDB预测结果",
-    )
-    return _export_response(data, filename, mime)
-
-
-# ---------------------------------------------------------------- UniProt 取序列
-
-
-@app.get("/api/uniprot/protein")
-def uniprot_protein() -> Response:
-    """按基因名取人类规范蛋白序列（带缓存）。"""
-    gene = (request.args.get("gene") or "").strip()
-    if not gene:
-        return api_error("请提供基因名，例如 KRAS")
-    refresh = str(request.args.get("refresh") or "").lower() in ("1", "true", "yes")
-    try:
-        info = neoantigen_mod.lookup(gene)
-        if refresh:
-            info = neoantigen_mod.lookup(gene)
-        return jsonify({"ok": True, "protein": info})
-    except resources_mod.ResourceError as exc:
-        return api_error(exc.message, exc.status, detail=exc.detail)
-    except Exception as exc:  # noqa: BLE001
-        return api_error(f"UniProt 查询失败：{exc}", 502)
-
-
-@app.post("/api/neoantigen/preview")
-def neoantigen_preview() -> Response:
-    """突变 → 蛋白序列 → 候选肽（不跑三工具，快速预览）。"""
-    p = body()
-    mutations = p.get("mutations") or []
-    lengths = [int(x) for x in (p.get("peptide_lengths") or [9]) if 8 <= int(x) <= 14] or [9]
-    if not mutations:
-        return api_error("请至少提供一个突变，例如 KRAS G12D")
-
-    parsed, errors = [], []
-    for raw in mutations:
-        mu = neoantigen_mod.normalize_mutation(raw)
-        if mu is None:
-            errors.append(f"无法解析「{raw}」")
-            continue
-        parsed.append(mu)
-    if not parsed:
-        return api_error("没有解析出有效突变。" + "；".join(errors))
-
-    proteins, notes = [], list(errors)
-    seen: dict[str, dict] = {}
-    for mu in parsed:
-        if mu["kind"] != "missense":
-            notes.append(f"{mu['text']} 不是错义突变，不会产生新表位肽。")
-            continue
-        gene = mu["gene"]
-        try:
-            if gene not in seen:
-                seen[gene] = neoantigen_mod.fetch_protein(gene)
-        except resources_mod.ResourceError as exc:
-            notes.append(f"{gene} 取序列失败：{exc.message}")
-            continue
-        prot = seen[gene]
-        seq = prot["seq"]
-        if not (1 <= mu["pos"] <= len(seq)):
-            notes.append(f"{mu['text']} 位置 {mu['pos']} 超出 {gene} 长度 {len(seq)}。")
-            continue
-        actual = seq[mu["pos"] - 1]
-        if actual != mu["ref"]:
-            notes.append(
-                f"{mu['text']} 与 UniProt {prot['accession']} 第 {mu['pos']} 位（{actual}）"
-                "不一致，将按给定替换强制应用。"
-            )
-        alt_seq = neoantigen_mod._apply_substitution(seq, mu["pos"], mu["ref"], mu["alt"])
-        peps = mutant_peptides(seq, alt_seq, lengths)
-        proteins.append(
-            {
-                "gene": gene,
-                "accession": prot["accession"],
-                "entry_name": prot["entry_name"],
-                "description": prot["description"],
-                "length": len(seq),
-                "mutation": mu,
-                "seq": seq,
-                "alt_seq": alt_seq,
-                "candidates": peps,
-                "candidate_count": len(peps),
-                "url": prot.get("url", ""),
-            }
-        )
-
-    return jsonify(
-        {
-            "ok": True,
-            "proteins": proteins,
-            "mutations": parsed,
-            "lengths": lengths,
-            "total_candidates": sum(x["candidate_count"] for x in proteins),
-            "notes": notes,
         }
     )
 
@@ -758,8 +567,7 @@ def parse_file() -> Response:
 
 def _title(kind: str, payload: dict) -> str:
     label = {"pan": "结合预测", "chop": "酶切预测", "stab": "稳定性预测",
-             "pipeline": "串联流水线", "mutant": "突变肽筛选",
-             "neoantigen": "新抗原筛选"}.get(kind, kind)
+             "pipeline": "串联流水线", "mutant": "突变肽筛选"}.get(kind, kind)
     n = payload.get("_input_count", 0)
     unit = payload.get("_input_unit") or "条序列"
     al = payload.get("alleles") or []
@@ -1186,50 +994,6 @@ def submit_mutant() -> Response:
     return _submit("mutant", p, task, count=len(peptides), unit="条候选肽")
 
 
-@app.post("/api/jobs/neoantigen")
-def submit_neoantigen() -> Response:
-    """新抗原一键流水线：突变 → UniProt 序列 → 酶切 → 结合 → 稳定性。"""
-    p = body()
-    alleles = resolve_alleles(p.get("alleles") or [])
-    if not alleles:
-        return api_error("请至少选择一个 HLA 等位基因")
-    raw_mutations = p.get("mutations") or []
-    if isinstance(raw_mutations, str):
-        raw_mutations = [x for x in raw_mutations.replace(";", "\n").splitlines() if x.strip()]
-    if not raw_mutations:
-        return api_error("请至少提供一个突变，例如 KRAS G12D")
-
-    parsed = []
-    for raw in raw_mutations:
-        mu = neoantigen_mod.normalize_mutation(raw)
-        if mu is None:
-            return api_error(f"无法解析突变「{raw}」。支持的写法：KRAS G12D、KRAS p.G12D、KRAS p.Gly12Asp")
-        parsed.append(mu)
-
-    lengths = [int(x) for x in (p.get("peptide_lengths") or [9])]
-    lengths = [x for x in lengths if 8 <= x <= 14] or [9]
-
-    params = {
-        "cleavage_threshold": float(p.get("cleavage_threshold", 0.5)),
-        "cleavage_model": int(p.get("cleavage_model", 0)),
-        "peptide_lengths": lengths,
-        "use_cleavage_filter": bool(p.get("use_cleavage_filter", False)),
-        "cleavage_tolerance": int(p.get("cleavage_tolerance", 1) or 0),
-        "max_rank_el": float(p.get("max_rank_el", 0) or 0),
-        "min_thalf": float(p.get("min_thalf", 0.0) or 0.0),
-        "include_wt": bool(p.get("include_wt", True)),
-        "mutant_specific_only": bool(p.get("mutant_specific_only", False)),
-    }
-
-    def task(progress: Progress) -> dict:
-        c = caller()
-        return neoantigen_mod.run_neoantigen(
-            c, mutations=parsed, alleles=alleles, params=params, progress=progress
-        )
-
-    return _submit("neoantigen", p, task, count=len(parsed), unit="个突变")
-
-
 def _subs(ref: str, alt: str):
     return [(i + 1, a, b) for i, (a, b) in enumerate(zip(ref, alt)) if a != b]
 
@@ -1299,7 +1063,7 @@ def export_job(job_id: str) -> Response:
     if not rows:
         return api_error("该任务没有结果行", 409)
 
-    kind = job.kind  # 各模式用各自的列定义（mutant 用 MUT_COLUMNS，neoantigen 用 NEO_COLUMNS）
+    kind = {"mutant": "pipeline"}.get(job.kind, job.kind)
     meta = {
         "title": job.title,
         "lines": [
@@ -1419,6 +1183,23 @@ def agent_save_config():
             cur["model"] = preset["model"]
     agent.save_agent_config({k: cur[k] for k in allowed if k in cur})
     return jsonify({"ok": True, "config": agent.get_agent_config_public()})
+
+
+@app.post("/api/agent/test")
+def agent_test_connection():
+    """连通性自测：POST {base_url?, api_key?, model?}；留空的字段用已保存配置补齐。"""
+    from . import agent
+    payload = body()
+    saved = agent._load_agent_config()
+    cfg = {
+        "base_url": (payload.get("base_url") or saved.get("base_url") or "").strip(),
+        "api_key": (payload.get("api_key") or saved.get("api_key") or "").strip(),
+        "model": (payload.get("model") or saved.get("model") or "").strip(),
+    }
+    if not cfg["base_url"] or not cfg["model"]:
+        return jsonify({"ok": False, "status": None, "message": "配置不完整",
+                        "suggestion": "请先填写 base_url 与 model（或先保存过配置）后再测试。", "key_len": len(cfg["api_key"])})
+    return jsonify(agent.test_llm_connection(cfg))
 
 
 @app.get("/api/agent/presets")

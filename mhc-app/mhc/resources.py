@@ -20,11 +20,14 @@ B. 只能外链的（给出卡片与说明）：
 
 from __future__ import annotations
 
+import csv
+import io
 import json
-import time
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 GDC_API = "https://api.gdc.cancer.gov"
@@ -96,44 +99,23 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
         raise ResourceError("远端返回的不是合法 JSON", detail=text[:500]) from exc
 
 
-RETRIES = 3
-RETRY_BACKOFF = 0.8  # 秒，逐次翻倍
-
-
 def _read(req: urllib.request.Request, timeout: int) -> str:
-    """发请求并读文本。
-
-    公网资源（GDC / IEDB / UniProt）偶发瞬时失败——连接被重置、5xx、读超时。
-    这些都不该直接暴露成 502 让用户重试，因此对「瞬时错误」做最多 RETRIES 次
-    指数退避重试；4xx（参数错、等位基因不存在）不重试，直接抛。
-    """
-    last: Exception | None = None
-    for attempt in range(RETRIES):
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            charset = resp.headers.get_content_charset() or "utf-8"
+            return raw.decode(charset, errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = ""
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-                charset = resp.headers.get_content_charset() or "utf-8"
-                return raw.decode(charset, errors="replace")
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:800]
-            except Exception:  # noqa: BLE001
-                pass
-            err = ResourceError(f"远端返回 HTTP {exc.code}", detail=detail)
-            # 429 / 5xx 视为瞬时，可重试；其余 4xx 是请求本身有问题
-            if exc.code != 429 and exc.code < 500:
-                raise err from exc
-            last = err
-        except urllib.error.URLError as exc:
-            last = ResourceError("无法连接远端服务（网络不通或 DNS 失败）", detail=str(exc.reason))
-        except (TimeoutError, OSError) as exc:
-            # socket.timeout 在 3.10+ 是 TimeoutError 别名；连接重置是 OSError
-            last = ResourceError("远端服务响应超时或连接中断", detail=f"{type(exc).__name__}: {exc}")
-        if attempt + 1 < RETRIES:
-            time.sleep(RETRY_BACKOFF * (2**attempt))
-    assert last is not None
-    raise last
+            detail = exc.read().decode("utf-8", errors="replace")[:800]
+        except Exception:  # noqa: BLE001
+            pass
+        raise ResourceError(f"远端返回 HTTP {exc.code}", detail=detail) from exc
+    except urllib.error.URLError as exc:
+        raise ResourceError("无法连接远端服务（网络不通或 DNS 失败）", detail=str(exc.reason)) from exc
+    except TimeoutError as exc:
+        raise ResourceError("远端服务响应超时", detail=f"{timeout} 秒") from exc
 
 
 # ---------------------------------------------------------------- GDC 突变检索
@@ -264,6 +246,212 @@ def search_gdc_mutations(
         "rows": rows,
         "filters": {"project": project, "gene": gene, "chromosome": chromosome, "mutation_type": mutation_type},
     }
+
+
+# --------------------------------------------- GDC 导出：适配流水线与其他检测
+
+_AA3TO1 = {
+    "Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D", "Cys": "C", "Gln": "Q", "Glu": "E",
+    "Gly": "G", "His": "H", "Ile": "I", "Leu": "L", "Lys": "K", "Met": "M", "Phe": "F",
+    "Pro": "P", "Ser": "S", "Thr": "T", "Trp": "W", "Tyr": "Y", "Val": "V", "Ter": "*",
+}
+
+_UNIPROT_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def parse_aa_change(aa_change: str) -> tuple[str, int, str] | None:
+    """氨基酸改变 → (野生AA, 位置, 突变AA)；R298C / p.R298C / p.Arg298Cys 均可。"""
+    if not aa_change:
+        return None
+    m = re.match(r"^p?\.?([A-Za-z]{1,3})(\d+)([A-Za-z]{1,3})$", str(aa_change).strip())
+    if not m:
+        return None
+    ref = m.group(1) if len(m.group(1)) == 1 else _AA3TO1.get(m.group(1).capitalize())
+    alt = m.group(3) if len(m.group(3)) == 1 else _AA3TO1.get(m.group(3).capitalize())
+    if not ref or not alt or ref == alt:
+        return None
+    return ref, int(m.group(2)), alt
+
+
+def uniprot_sequence(gene: str) -> tuple[str, str]:
+    """UniProt reviewed 人类蛋白序列，返回 (accession, seq)；带会话缓存。"""
+    g = (gene or "").strip().upper()
+    if not g:
+        raise ResourceError("缺少基因名，无法查询 UniProt 序列", status=400)
+    if g in _UNIPROT_CACHE:
+        return _UNIPROT_CACHE[g]
+    url = (
+        "https://rest.uniprot.org/uniprotkb/search?"
+        + urllib.parse.urlencode(
+            {
+                "query": f"gene_exact:{g} AND organism_id:9606 AND reviewed:true",
+                "format": "fasta",
+                "size": "1",
+            }
+        )
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        raise ResourceError(f"UniProt 查询失败（{g}）：{exc}") from exc
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    header = lines[0] if lines else ""
+    seq = "".join(ln.strip() for ln in lines if not ln.startswith(">"))
+    if not seq:
+        raise ResourceError(f"UniProt 未找到 {g} 的已评审（reviewed）人类蛋白序列", status=404)
+    acc = header[1:].split()[0] if header.startswith(">") else ""
+    _UNIPROT_CACHE[g] = (acc, seq)
+    return acc, seq
+
+
+def _gdc_missense_rows(rows: list[dict]) -> list[dict]:
+    out = []
+    for r in rows or []:
+        gene = (r.get("gene") or "").strip()
+        aa = (r.get("aa_change") or "").strip()
+        if not gene or not aa:
+            continue
+        ch = parse_aa_change(aa)
+        if not ch:
+            continue
+        out.append({**r, "_pos": ch[1], "_ref": ch[0], "_alt": ch[2]})
+    return out
+
+
+def gdc_export_file(rows: list[dict], fmt: str, *, name_hint: str = "GDC突变检索") -> tuple[str, str, str]:
+    """GDC 检索行 → 文件文本（csv / vcf / fasta21 / peptides）。返回 (文本, 文件名, MIME)。
+
+    - vcf:      合成 snpEff 风格 ANN 注释 VCF，流水线第 8 步（--vcf）直接解析
+    - fasta21:  每个错义突变 ±10aa 的 21-mer 上下文 FASTA（供候选肽生成与突变筛选参考）
+    - peptides: 9-mer 突变肽列表（突变残基居中，去重），可直接粘贴进 MHC 结合预测 / IEDB
+    - csv:      中文报告（与检索结果表一致）
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if fmt == "csv":
+        cols = [
+            ("基因", "gene"), ("氨基酸改变", "aa_change"), ("变异类型", "consequence_type"),
+            ("基因组改变", "dna_change"), ("染色体", "chromosome"), ("起点", "start"),
+            ("终点", "end"), ("参考碱基", "ref"), ("突变碱基", "alt"),
+            ("突变类型", "mutation_type"), ("突变亚型", "mutation_subtype"),
+            ("参考基因组", "build"), ("转录本", "transcript_id"), ("SSM ID", "ssm_id"),
+        ]
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\r\n")
+        w.writerow([c[0] for c in cols])
+        for r in rows or []:
+            w.writerow([r.get(c[1], "") or "" for c in cols])
+        return buf.getvalue(), f"{name_hint}_{stamp}.csv", "text/csv; charset=utf-8"
+
+    mut = _gdc_missense_rows(rows)
+    if not mut:
+        raise ResourceError("导出内容中没有带蛋白级注释的错义突变，请先检索到有效突变", status=400)
+
+    if fmt == "vcf":
+        out = ["##fileformat=VCFv4.2", "##reference=GRCh38"]
+        out.append(
+            '##INFO=<ID=ANN,Number=.,Type=String,Description="Allele|Annotation|Annotation_Impact'
+            '|Gene_Name|Gene_Type|Transcript_BioType|cDNA_pos|cDNA_len|AA_pos|AA_len|AA_change">'
+        )
+        out.append('##INFO=<ID=GENE,Number=1,Type=String,Description="Gene symbol">')
+        out.append("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
+        n = 0
+        for r in mut:
+            ref_dna = (r.get("ref") or "").strip() or "N"
+            alt_dna = (r.get("alt") or "").strip() or "N"
+            chrom = str(r.get("chromosome") or "0").replace("chr", "")
+            pos = int(r.get("start") or 0) or 1
+            hgvsp = f"p.{r['_ref']}{r['_pos']}{r['_alt']}"
+            ann = f"ANN={ref_dna}|missense_variant|MODERATE|{r['gene']}|||||||{hgvsp}|"
+            gene_info = f"GENE={r['gene']}"
+            vid = r.get("ssm_id") or f"{r['gene']}{r['_pos']}"
+            out.append(f"{chrom}\t{pos}\t{vid}\t{ref_dna}\t{alt_dna}\t.\t.\t{ann};{gene_info}")
+            n += 1
+        return "\n".join(out) + "\n", f"{name_hint}_annotated_{stamp}.vcf", "text/plain; charset=utf-8"
+
+    # fasta21 / peptides 需要野生型序列
+    proteins: dict[str, str] = {}
+    accs: dict[str, str] = {}
+    for r in mut:
+        g = r["gene"]
+        if g not in proteins:
+            acc, seq = uniprot_sequence(g)
+            proteins[g] = seq
+            accs[g] = acc
+    skipped: list[str] = []
+    if fmt == "fasta21":
+        out = []
+        n = 0
+        for r in mut:
+            seq = proteins.get(r["gene"]) or ""
+            pos = r["_pos"]
+            if pos - 1 >= len(seq):
+                skipped.append(f"{r['gene']} {r['aa_change']}（位置超出蛋白长度）")
+                continue
+            ctx = seq[max(0, pos - 11) : pos + 10]
+            out.append(f">{r['gene']}_p.{r['_ref']}{pos}{r['_alt']} pos={pos} acc={accs.get(r['gene'], '')} len={len(ctx)}")
+            for i in range(0, len(ctx), 60):
+                out.append(ctx[i : i + 60])
+            n += 1
+        text = "\n".join(out) + "\n"
+        if skipped:
+            text += "".join(f"# 跳过: {s}\n" for s in skipped)
+        return text, f"{name_hint}_21mer_{stamp}.fasta", "text/plain; charset=utf-8"
+
+    if fmt == "peptides":
+        seen: set[str] = set()
+        out: list[str] = []
+        for r in mut:
+            seq = proteins.get(r["gene"]) or ""
+            pos = r["_pos"]
+            if pos - 5 < 1 or pos + 4 > len(seq):
+                skipped.append(f"{r['gene']} {r['aa_change']}（靠近蛋白端，9-mer 不完整）")
+                continue
+            pep = seq[pos - 5 : pos + 4]
+            if pep in seen:
+                continue
+            seen.add(pep)
+            out.append(pep)
+        text = "\n".join(out) + "\n"
+        if skipped:
+            text += "\n" + "".join(f"# 跳过: {s}\n" for s in skipped)
+        return text, f"{name_hint}_9mer_{stamp}.txt", "text/plain; charset=utf-8"
+
+    raise ResourceError(f"未知导出格式：{fmt}", status=400)
+
+
+def gdc_export_mutant(rows: list[dict]) -> dict[str, Any]:
+    """GDC 检索行 → 「突变肽筛选」模式可直接导入的数据（自动配 UniProt FASTA）。"""
+    mut = _gdc_missense_rows(rows)
+    if not mut:
+        raise ResourceError("当前结果中没有带蛋白级注释的错义突变，请先检索到有效突变", status=400)
+    proteins: dict[str, str] = {}
+    skipped: list[str] = []
+    mutations: list[dict[str, Any]] = []
+    for r in mut:
+        g = r["gene"]
+        if g not in proteins:
+            try:
+                _acc, seq = uniprot_sequence(g)
+                proteins[g] = seq
+            except ResourceError as exc:
+                skipped.append(f"{g}: {exc.message}")
+                continue
+        seq = proteins.get(g) or ""
+        pos, ref, alt = r["_pos"], r["_ref"], r["_alt"]
+        if pos - 1 >= len(seq):
+            skipped.append(f"{g} {r['aa_change']}（位置超出蛋白长度）")
+            continue
+        if seq[pos - 1] != ref:
+            skipped.append(
+                f"{g} {r['aa_change']}（UniProt 序列该位为 {seq[pos - 1]}，与检索结果 {ref} 不一致，已保留并标注）"
+            )
+        mutations.append({"protein": g, "pos": pos, "ref": ref, "alt": alt, "ssm_id": r.get("ssm_id") or ""})
+    if not mutations:
+        raise ResourceError("没有可用突变：" + "；".join(skipped[:5]), status=400)
+    fasta = "".join(f">{g}\n{seq}\n" for g, seq in proteins.items())
+    return {"input_fasta": fasta, "mutations": mutations, "skipped": skipped, "genes": sorted(proteins)}
 
 
 def gdc_project_summary(project: str = "TCGA-PAAD") -> dict[str, Any]:
