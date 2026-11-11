@@ -55,6 +55,23 @@ def _wsl_path(p: str) -> str:
     return (p or "").strip()
 
 
+# gdc-client 候选路径（Flask 进程 PATH 不含 /opt/bio/tools/bin，which 会漏）
+_GDC_CANDIDATES = (
+    "/opt/bio/tools/bin/gdc-client",
+    "/opt/bio/tools/gdc-client-venv/bin/gdc-client",
+)
+
+
+def _find_gdc_client() -> str:
+    p = shutil.which("gdc-client")
+    if p:
+        return p
+    for c in _GDC_CANDIDATES:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return ""
+
+
 def _validate(spec: dict) -> tuple[str, list[str], dict]:
     """返回 (mode, cmd_args, meta_extra)。非法直接抛 ValueError。"""
     mode = (spec.get("mode") or "fastq").strip().lower()
@@ -82,7 +99,7 @@ def _validate(spec: dict) -> tuple[str, list[str], dict]:
         mf = _wsl_path(spec.get("manifest"))
         if not mf:
             raise ValueError("manifest 模式需要 GDC manifest 文件路径")
-        gdc = shutil.which("gdc-client")
+        gdc = _find_gdc_client()
         extra = {"manifest": mf, "gdc_client": bool(gdc)}
         return mode, base, extra  # args 由 wrapper 拼
 
@@ -115,7 +132,7 @@ cd /tmp
     RAW="$WORK/raw"
     mkdir -p "$RAW"
     echo "== gdc-client 下载 manifest → $RAW =="
-    "$GDC_BIN" download -n 4 -d "$RAW" "$MANIFEST"
+    "$GDC_BIN" download -d "$RAW" -n 4 -m "$MANIFEST"
     rc=$?
     echo "__GDC_RC__$rc"
     if [ $rc -ne 0 ]; then
@@ -149,7 +166,7 @@ def start(spec: dict) -> dict:
     rd.mkdir(parents=True)
 
     work = (spec.get("work") or "~/mhc-pipeline/patient1").strip()
-    gdc_bin = shutil.which("gdc-client") or ""
+    gdc_bin = _find_gdc_client()
 
     if mode == "manifest":
         wrapper = rd / "wrapper.sh"
