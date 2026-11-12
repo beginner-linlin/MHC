@@ -370,10 +370,26 @@ def list_runs(limit: int = 8) -> list[dict]:
     return runs
 
 
-def save_upload(filename: str, data: bytes) -> dict:
+def save_upload(filename: str, stream: Any, *, max_bytes: int = 2 * 1024 * 1024 * 1024) -> dict:
+    """流式保存上传文件到 uploads/，返回 {path, size}。
+
+    stream: werkzeug FileStorage（有 .stream/.filename），或二进制文件对象。
+    FASTQ 可达数 GB，逐块写盘避免占满内存；超过 max_bytes 截断报错。
+    """
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     safe = Path(filename).name.replace("..", "_") or "upload.bin"
     stamp = time.strftime("%H%M%S")
     dst = UPLOAD_DIR / f"{stamp}_{safe}"
-    dst.write_bytes(data)
-    return {"path": str(dst), "size": len(data)}
+    total = 0
+    with dst.open("wb") as out:
+        while True:
+            chunk = stream.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                out.close()
+                dst.unlink(missing_ok=True)
+                raise ValueError(f"文件超过 {max_bytes // (1024 * 1024)}MB 上传上限")
+            out.write(chunk)
+    return {"path": str(dst), "size": total}

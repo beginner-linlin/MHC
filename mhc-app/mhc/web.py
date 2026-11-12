@@ -55,10 +55,11 @@ DB_PATH = DATA_DIR / "mhc.sqlite3"
 for d in (DATA_DIR, WORK_DIR, EXPORT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-MAX_BODY = 32 * 1024 * 1024  # 32 MB
+MAX_BODY = 32 * 1024 * 1024  # JSON 请求体上限 32 MB
+MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # 流水线文件上传上限 2 GB（FASTQ 大文件）
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
-app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
 app.json.ensure_ascii = False
 
 store = JobStore(DB_PATH)
@@ -1377,14 +1378,17 @@ def pipeline_stop(run_id: str) -> Response:
 
 @app.post("/api/pipeline/upload")
 def pipeline_upload() -> Response:
+    """上传流水线输入文件（FASTQ / manifest / MAF / VCF / CSV），返回落盘路径。"""
     from . import pipeweb
     f = request.files.get("file")
     if f is None or not f.filename:
-        return api_error("请选择要上传的文件（manifest / MAF / VCF）", 400)
-    data = f.read()
-    if len(data) > 32 * 1024 * 1024:
-        return api_error("文件超过 32MB 上限", 400)
-    info = pipeweb.save_upload(f.filename, data)
+        return api_error("请选择要上传的文件（FASTQ / manifest / MAF / VCF）", 400)
+    try:
+        info = pipeweb.save_upload(f.filename, f.stream)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:  # noqa: BLE001
+        return api_error(f"保存上传文件失败：{exc}", 500)
     return jsonify({"ok": True, **info})
 
 
@@ -1411,7 +1415,7 @@ def index() -> Response:
 
 @app.errorhandler(413)
 def too_large(_exc) -> tuple[Response, int]:
-    return api_error("提交的数据过大（上限 32 MB）", 413)
+    return api_error("提交的数据过大（JSON 上限 32 MB，上传文件上限 2 GB）", 413)
 
 
 @app.errorhandler(500)

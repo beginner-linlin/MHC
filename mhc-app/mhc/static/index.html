@@ -422,13 +422,13 @@
             <button class="dp-chip" data-runmode="mafvcf">已注释 MAF·VCF（跳上游）</button>
           </div>
           <div class="dp-run-grid">
-            <label class="dp-run-field" data-runmode-field="fastq">肿瘤 FASTQ R1（WSL 路径）<input id="dpRunR1" placeholder="/mnt/c/.../tumor_R1.fastq.gz 或 ~/..."></label>
-            <label class="dp-run-field" data-runmode-field="fastq">肿瘤 FASTQ R2<input id="dpRunR2" placeholder="/mnt/c/.../tumor_R2.fastq.gz"></label>
-            <label class="dp-run-field" data-runmode-field="fastq">正常对照 R1（可选）<input id="dpRunN1" placeholder="配对正常样本 R1"></label>
-            <label class="dp-run-field" data-runmode-field="fastq">正常对照 R2（可选）<input id="dpRunN2"></label>
-            <label class="dp-run-field" data-runmode-field="manifest">GDC manifest 文件（官方下载清单）<input id="dpRunManifest" placeholder="gdc_manifest_*.txt（GDC 官网 Cart 下载）"></label>
-            <label class="dp-run-field" data-runmode-field="mafvcf">注释 VCF / MAF / 突变检索 CSV<input id="dpRunMafVcf" placeholder="snpEff/VEP 注释 VCF、TCGA MAF 或 GDC 突变检索导出 CSV"></label>
-            <label class="dp-run-field" data-runmode-field="manifest"><span class="dp-upl"><input id="dpRunUploadFile" type="file" accept=".txt,.maf,.vcf,.gz,.tsv,.csv" hidden><button class="btn btn-ghost btn-sm" id="btnDpUpload">上传文件…</button></span></label>
+            <label class="dp-run-field" data-runmode-field="fastq"><span class="dp-fld-head">肿瘤 FASTQ R1<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunR1" data-upl-accept=".fastq,.fq,.gz,.txt" title="上传 FASTQ R1（大文件建议放 WSL 路径）">⬆ 上传</button></span><input id="dpRunR1" placeholder="/mnt/c/.../tumor_R1.fastq.gz 或 ~/..."></label>
+            <label class="dp-run-field" data-runmode-field="fastq"><span class="dp-fld-head">肿瘤 FASTQ R2<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunR2" data-upl-accept=".fastq,.fq,.gz,.txt" title="上传 FASTQ R2（大文件建议放 WSL 路径）">⬆ 上传</button></span><input id="dpRunR2" placeholder="/mnt/c/.../tumor_R2.fastq.gz"></label>
+            <label class="dp-run-field" data-runmode-field="fastq"><span class="dp-fld-head">正常对照 R1（可选）<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunN1" data-upl-accept=".fastq,.fq,.gz,.txt" title="上传正常对照 R1">⬆ 上传</button></span><input id="dpRunN1" placeholder="配对正常样本 R1"></label>
+            <label class="dp-run-field" data-runmode-field="fastq"><span class="dp-fld-head">正常对照 R2（可选）<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunN2" data-upl-accept=".fastq,.fq,.gz,.txt" title="上传正常对照 R2">⬆ 上传</button></span><input id="dpRunN2"></label>
+            <label class="dp-run-field" data-runmode-field="manifest"><span class="dp-fld-head">GDC manifest 文件（官方下载清单）<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunManifest" data-upl-accept=".txt,.tsv,.csv" title="上传 gdc_manifest_*.txt">⬆ 上传</button></span><input id="dpRunManifest" placeholder="gdc_manifest_*.txt（GDC 官网 Cart 下载）"></label>
+            <label class="dp-run-field" data-runmode-field="mafvcf"><span class="dp-fld-head">注释 VCF / MAF / 突变检索 CSV<button class="btn btn-ghost btn-xs dp-upl-btn" type="button" data-upl-target="dpRunMafVcf" data-upl-accept=".vcf,.vcf.gz,.maf,.maf.gz,.csv,.tsv,.txt" title="上传注释 VCF / TCGA MAF / GDC 突变检索 CSV">⬆ 上传</button></span><input id="dpRunMafVcf" placeholder="snpEff/VEP 注释 VCF、TCGA MAF 或 GDC 突变检索导出 CSV"></label>
+            <input id="dpRunUploadFile" type="file" hidden>
             <label class="dp-run-field">等位基因（逗号分隔，FASTQ 模式可留空自动 OptiType）<input id="dpRunAlleles" placeholder="HLA-A*02:01,HLA-A*11:01,…"></label>
             <label class="dp-run-field">工作目录<input id="dpRunWork" placeholder="~/mhc-pipeline/patient1"></label>
           </div>

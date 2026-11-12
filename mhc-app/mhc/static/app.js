@@ -2421,10 +2421,15 @@ document.addEventListener('DOMContentLoaded', function dataprepBind() {
   if (stopBtn) stopBtn.onclick = dpRunStop;
   const runsBtn = document.getElementById('btnDpRunsRefresh');
   if (runsBtn) runsBtn.onclick = dpLoadRuns;
-  const uplBtn = document.getElementById('btnDpUpload');
   const uplInput = document.getElementById('dpRunUploadFile');
-  if (uplBtn && uplInput) {
-    uplBtn.onclick = () => uplInput.click();
+  if (uplInput) {
+    document.querySelectorAll('.dp-upl-btn').forEach((b) => {
+      b.onclick = () => {
+        uplInput.dataset.target = b.dataset.uplTarget || '';
+        uplInput.accept = b.dataset.uplAccept || '';
+        uplInput.click();
+      };
+    });
     uplInput.onchange = dpRunUpload;
   }
   dpRunApplyModeFields();
@@ -2582,9 +2587,10 @@ async function dpRunStop() {
 async function dpRunUpload() {
   const input = document.getElementById('dpRunUploadFile');
   if (!input || !input.files || !input.files[0]) return;
+  const target = input.dataset.target || (dpRunMode === 'manifest' ? 'dpRunManifest' : 'dpRunMafVcf');
   const fd = new FormData();
   fd.append('file', input.files[0]);
-  dpRunMsg('上传中…');
+  dpRunMsg('上传中…（文件越大耗时越长，可留意输入框回填）');
   try {
     const r = await fetch('/api/pipeline/upload', { method: 'POST', body: fd });
     const d = await r.json();
@@ -2592,12 +2598,14 @@ async function dpRunUpload() {
       dpRunMsg('❌ ' + (d.error || 'HTTP ' + r.status), 'err');
       return;
     }
-    const target = dpRunMode === 'manifest' ? 'dpRunManifest' : 'dpRunMafVcf';
     const el = document.getElementById(target);
     if (el) el.value = d.path;
-    dpRunMsg('✅ 已上传: ' + d.path, 'ok');
+    const mb = d.size > 0 ? (d.size / 1048576).toFixed(1) + ' MB' : '';
+    dpRunMsg('✅ 已上传: ' + d.path + (mb ? '（' + mb + '）' : ''), 'ok');
   } catch (e) {
     dpRunMsg('❌ ' + e.message, 'err');
+  } finally {
+    input.value = '';
   }
 }
 
