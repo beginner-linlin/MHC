@@ -36,7 +36,7 @@ async function shot(page, name) {
     await page.goto(URL, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('.nav-item', { timeout: 15000 });
     const navCount = await page.locator('.nav-item').count();
-    ok('侧栏 9 个模式', navCount === 9, `=${navCount}`);
+    ok('侧栏 8 个模式', navCount === 8, `=${navCount}`);
     const hasRes = await page.locator('.nav-item[data-mode="resources"]').count();
     ok('存在「数据库与工具」入口', hasRes === 1);
     await shot(page, 'r01_home');
@@ -52,9 +52,9 @@ async function shot(page, name) {
     ok('标题切换', title.includes('数据库'), `=${title}`);
     await shot(page, 'r02_resources');
 
-    // ---------- 3. 四个子页签 ----------
+    // ---------- 3. 三个子页签 ----------
     const tabs = await page.locator('.res-tabs .chip').count();
-    ok('4 个子页签', tabs === 4, `=${tabs}`);
+    ok('3 个子页签', tabs === 3, `=${tabs}`);
     ok('GDC 页默认显示', await page.locator('#resPaneGdc').isVisible());
     ok('IEDB 页默认隐藏', !(await page.locator('#resPaneIedb').isVisible()));
 

@@ -1260,10 +1260,6 @@ input[type="text"]:focus, select:focus {
   text-decoration: none;
 }
 
-@media (max-width: 1100px) {
-  .panel-resources { grid-column: 1 / -1; }
-}
-
 /* 资源模式下布局改为两栏（侧栏 + 资源面板） */
 .layout.res-layout {
   grid-template-columns: 232px 1fr;
@@ -1492,4 +1488,10 @@ input[type="text"]:focus, select:focus {
 @media (max-width: 980px) {
   .dp-step { grid-template-columns: 34px 84px 1fr; }
   .dp-tools { grid-column: 2 / -1; text-align: left; }
+}
+
+/* ─────────────────────────── 响应式：资源/助手/数据准备面板塌缩 ─────────────────────────── */
+@media (max-width: 1080px) {
+  .layout.res-layout, .layout.agent-layout, .layout.dp-layout { grid-template-columns: 1fr; }
+  .panel-resources, .panel-agent, .panel-dataprep { grid-column: 1 / -1; }
 }
